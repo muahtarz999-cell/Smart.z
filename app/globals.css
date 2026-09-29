@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  background: #0B0D12;
+  color: #EDEDED;
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+input,
+textarea {
+  outline: none;
+}
+
+@keyframes breathe-wave {
+  0%,
+  100% {
+    transform: scale(0.5);
+    opacity: 0.3;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.wave-tile {
+  animation-name: breathe-wave;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
