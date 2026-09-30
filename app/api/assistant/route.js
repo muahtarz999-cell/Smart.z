@@ -3,7 +3,6 @@ export const runtime = 'edge';
 import { NextResponse } from 'next/server';
 
 // جدار الصلاحيات: أي فعل هنا مصنّف كـ "تلقائي" أو "يحتاج تأكيد".
-// هذا مجرد هيكل أولي — يُوسَّع لاحقًا حسب الأفعال الفعلية (إرسال، قراءة...).
 const AUTO_ALLOWED_ACTIONS = ['summarize', 'transcribe', 'answer'];
 const REQUIRES_CONFIRMATION = ['send_message', 'add_contact'];
 
@@ -20,13 +19,17 @@ export async function POST(req) {
 
     const token = process.env.GITHUB_MODELS_TOKEN;
     if (!token) {
-      return NextResponse.json({
-        reply:
-          'لم يتم إعداد مفتاح النموذج بعد. أضف GITHUB_MODELS_TOKEN في إعدادات البيئة.',
-      });
+      console.error('[Assistant API Error] Missing GITHUB_MODELS_TOKEN environment variable.');
+      return NextResponse.json(
+        {
+          reply:
+            'لم يتم إعداد مفتاح النموذج بعد. أضف GITHUB_MODELS_TOKEN في إعدادات البيئة على Cloudflare.',
+        },
+        { status: 500 }
+      );
     }
 
-    // نداء نموذج عبر GitHub Models (نقطة نهاية متوافقة مع صيغة OpenAI/Azure).
+    // نداء النموذج عبر GitHub Models (نقطة نهاية متوافقة مع OpenAI / Azure)
     const response = await fetch(
       'https://models.inference.ai.azure.com/chat/completions',
       {
@@ -36,7 +39,7 @@ export async function POST(req) {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: 'gpt-4o',
           messages: [
             {
               role: 'system',
@@ -46,17 +49,25 @@ export async function POST(req) {
             },
             { role: 'user', content: message },
           ],
-          temperature: 0.4,
+          temperature: 0.7,
+          max_tokens: 1000,
         }),
       }
     );
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error('GitHub Models error:', errText);
-      return NextResponse.json({
-        reply: 'تعذر الاتصال بالنموذج حاليًا، حاول بعد قليل.',
-      });
+      console.error(
+        `[Assistant API Error] Status: ${response.status} ${response.statusText}`
+      );
+      console.error(`[Assistant API Error] Response Body: ${errText}`);
+      return NextResponse.json(
+        {
+          reply: `تعذر الاتصال بالنموذج حاليًا (رمز الخطأ: ${response.status}). حاول بعد قليل.`,
+          details: errText,
+        },
+        { status: response.status }
+      );
     }
 
     const data = await response.json();
@@ -65,9 +76,9 @@ export async function POST(req) {
 
     return NextResponse.json({ reply });
   } catch (err) {
-    console.error(err);
+    console.error('[Assistant API Unexpected Error]:', err);
     return NextResponse.json(
-      { reply: 'حدث خطأ غير متوقع.' },
+      { reply: 'حدث خطأ غير متوقع في خادم المساعد.' },
       { status: 500 }
     );
   }
