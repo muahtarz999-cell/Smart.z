@@ -1,3 +1,5 @@
+export const runtime = 'edge';
+
 import { NextResponse } from 'next/server';
 
 // جدار الصلاحيات: أي فعل هنا مصنّف كـ "تلقائي" أو "يحتاج تأكيد".

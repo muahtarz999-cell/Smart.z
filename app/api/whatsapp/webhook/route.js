@@ -1,3 +1,5 @@
+export const runtime = 'edge';
+
 import { NextResponse } from 'next/server';
 
 // التحقق الأولي من Meta عند ربط الـ Webhook (مرة واحدة عند الإعداد)
