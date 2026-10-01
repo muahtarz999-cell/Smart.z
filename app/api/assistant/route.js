@@ -1,85 +1,64 @@
-export const runtime = 'edge';
-
 import { NextResponse } from 'next/server';
 
-// جدار الصلاحيات: أي فعل هنا مصنّف كـ "تلقائي" أو "يحتاج تأكيد".
-const AUTO_ALLOWED_ACTIONS = ['summarize', 'transcribe', 'answer'];
-const REQUIRES_CONFIRMATION = ['send_message', 'add_contact'];
+export const runtime = 'edge';
 
-export async function POST(req) {
+const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
+const SYSTEM_MESSAGE = `أنت المساعد الشخصي الذكي Smart.z. افهم العربية ولهجاتها جيدًا، وأجب باللغة التي يستخدمها المستخدم، وبالعربية عندما يكتب بالعربية. اجعل إجاباتك واضحة ومختصرة. لا تخترع معلومات غير معروفة؛ وضّح ما لا تعرفه عند الحاجة. لا تذكر تفاصيل تقنية داخلية إلا إذا كانت ضرورية للإجابة، ولا تدّع تنفيذ أي إجراء لم تنفذه فعليًا.`;
+
+function errorResponse(message, status) {
+  return NextResponse.json({ error: true, message }, { status });
+}
+
+export async function POST(request) {
+  let body;
   try {
-    const { message } = await req.json();
+    body = await request.json();
+  } catch {
+    return errorResponse('Invalid JSON request.', 400);
+  }
 
-    if (!message || typeof message !== 'string') {
-      return NextResponse.json(
-        { reply: 'لم يصل أي نص لمعالجته.' },
-        { status: 400 }
-      );
-    }
+  const message = typeof body?.message === 'string' ? body.message.trim() : '';
+  if (!message) {
+    return errorResponse('A non-empty message is required.', 400);
+  }
 
-    const token = process.env.GITHUB_MODELS_TOKEN;
-    if (!token) {
-      console.error('[Assistant API Error] Missing GITHUB_MODELS_TOKEN environment variable.');
-      return NextResponse.json(
-        {
-          reply:
-            'لم يتم إعداد مفتاح النموذج بعد. أضف GITHUB_MODELS_TOKEN في إعدادات البيئة على Cloudflare.',
-        },
-        { status: 500 }
-      );
-    }
-
-    // نداء النموذج عبر GitHub Models (نقطة نهاية متوافقة مع OpenAI / Azure)
-    const response = await fetch(
-      'https://models.inference.ai.azure.com/chat/completions',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: [
-            {
-              role: 'system',
-              content:
-                'أنت مساعد شخصي ذكي لرجل أعمال. أجب بالعربية الفصحى الواضحة، ' +
-                'بإيجاز ومباشرة، وبأسلوب احترافي هادئ.',
-            },
-            { role: 'user', content: message },
-          ],
-          temperature: 0.7,
-          max_tokens: 1000,
-        }),
-      }
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return errorResponse(
+      'API key missing or authentication failed.',
+      500
     );
+  }
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error(
-        `[Assistant API Error] Status: ${response.status} ${response.statusText}`
-      );
-      console.error(`[Assistant API Error] Response Body: ${errText}`);
-      return NextResponse.json(
-        {
-          reply: `تعذر الاتصال بالنموذج حاليًا (رمز الخطأ: ${response.status}). حاول بعد قليل.`,
-          details: errText,
-        },
-        { status: response.status }
-      );
+  try {
+    const groqResponse = await fetch(GROQ_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [
+          { role: 'system', content: SYSTEM_MESSAGE },
+          { role: 'user', content: message },
+        ],
+      }),
+    });
+
+    if (!groqResponse.ok) {
+      return errorResponse('Assistant service is temporarily unavailable.', 502);
     }
 
-    const data = await response.json();
-    const reply =
-      data.choices?.[0]?.message?.content || 'لم يصل رد من النموذج.';
+    const result = await groqResponse.json();
+    const reply = result.choices?.[0]?.message?.content;
+    if (typeof reply !== 'string' || !reply.trim()) {
+      return errorResponse('Assistant service returned an invalid response.', 502);
+    }
 
-    return NextResponse.json({ reply });
-  } catch (err) {
-    console.error('[Assistant API Unexpected Error]:', err);
-    return NextResponse.json(
-      { reply: 'حدث خطأ غير متوقع في خادم المساعد.' },
-      { status: 500 }
-    );
+    return NextResponse.json({ reply: reply.trim() });
+  } catch {
+    return errorResponse('Assistant service is temporarily unavailable.', 502);
   }
 }
