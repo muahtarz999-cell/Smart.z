@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 export const runtime = 'edge';
 
 const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
+const GROQ_MODEL = 'openai/gpt-oss-120b';
 const SYSTEM_MESSAGE = `أنت المساعد الشخصي الذكي Smart.z. افهم العربية ولهجاتها جيدًا، وأجب باللغة التي يستخدمها المستخدم، وبالعربية عندما يكتب بالعربية. اجعل إجاباتك واضحة ومختصرة. لا تخترع معلومات غير معروفة؛ وضّح ما لا تعرفه عند الحاجة. لا تذكر تفاصيل تقنية داخلية إلا إذا كانت ضرورية للإجابة، ولا تدّع تنفيذ أي إجراء لم تنفذه فعليًا.`;
 
 function errorResponse(message, status) {
