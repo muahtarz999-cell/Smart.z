@@ -13,6 +13,14 @@ const MENU_SECTIONS = [
   { id: 'privacy', label: 'الخصوصية والبيانات' },
 ];
 
+const SUPPORTED_APPS = [
+  { id: 'whatsapp', name: 'WhatsApp' },
+  { id: 'google-calendar', name: 'Google Calendar' },
+  { id: 'gmail', name: 'Gmail' },
+  { id: 'outlook', name: 'Microsoft Outlook' },
+  { id: 'telegram', name: 'Telegram' },
+];
+
 const PROFILE_STORAGE_KEY = 'smart-assistant-profile';
 const PRIVACY_STORAGE_KEY = 'smart-assistant-privacy-enabled';
 const MEMORY_STORAGE_KEY = 'smart-assistant-memories';
@@ -29,6 +37,8 @@ export default function Home() {
   const [activeSection, setActiveSection] = useState(null);
   const [locationSharing, setLocationSharing] = useState(false);
   const [locationSharingLoaded, setLocationSharingLoaded] = useState(false);
+  const [appPickerOpen, setAppPickerOpen] = useState(false);
+  const [selectedApps, setSelectedApps] = useState([]);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [privacyEnabled, setPrivacyEnabled] = useState(true);
@@ -454,24 +464,82 @@ export default function Home() {
                   <div className="space-y-5">
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">ربط التطبيقات</h2>
-                      <p className="mt-1 text-xs text-text-secondary">التطبيقات المتاحة للربط</p>
+                      <p className="mt-1 text-xs text-text-secondary">اختر التطبيقات التي ترغب بإضافتها.</p>
                     </div>
 
-                    <ul className="space-y-2">
-                      <li className="flex min-h-16 items-center gap-3 rounded-lg border border-base-border bg-base-card px-3 py-3">
-                        <span className="flex w-7 justify-center" aria-hidden="true">
-                          <span className="h-3 w-3 rounded-full border border-gold/45 bg-gold/20 shadow-[inset_0_0_5px_rgba(201,168,104,0.18)]" />
-                        </span>
-                        <span className="min-w-0 flex-1 text-sm text-text-primary">WhatsApp</span>
-                        <button
-                          type="button"
-                          disabled
-                          className="min-h-9 min-w-16 rounded-lg border border-base-border px-3 text-xs text-text-secondary opacity-70"
-                        >
-                          ربط
-                        </button>
-                      </li>
-                    </ul>
+                    <div className="space-y-2">
+                      <ul className="space-y-2">
+                        <li className="flex min-h-16 items-center gap-3 rounded-lg border border-base-border bg-base-card px-3 py-3">
+                          <span className="flex w-7 justify-center" aria-hidden="true">
+                            <span className="h-3 w-3 rounded-full border border-gold/45 bg-gold/20 shadow-[inset_0_0_5px_rgba(201,168,104,0.18)]" />
+                          </span>
+                          <span className="min-w-0 flex-1 text-sm text-text-primary">WhatsApp</span>
+                          <button
+                            type="button"
+                            disabled
+                            className="min-h-9 min-w-16 rounded-lg border border-base-border px-3 text-xs text-text-secondary opacity-70"
+                          >
+                            ربط
+                          </button>
+                        </li>
+                        {selectedApps.map((appId) => {
+                          const app = SUPPORTED_APPS.find((supportedApp) => supportedApp.id === appId);
+                          if (!app || appId === 'whatsapp') return null;
+                          return (
+                            <li key={app.id} className="flex min-h-16 items-center gap-3 rounded-lg border border-base-border bg-base-card px-3 py-3">
+                              <span className="flex w-7 justify-center" aria-hidden="true">
+                                <span className="h-3 w-3 rounded-full border border-gold/45 bg-gold/20 shadow-[inset_0_0_5px_rgba(201,168,104,0.18)]" />
+                              </span>
+                              <span className="min-w-0 flex-1 text-sm text-text-primary">{app.name}</span>
+                              <span className="text-xs text-text-secondary">غير مرتبط</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+
+                      <button
+                        type="button"
+                        aria-expanded={appPickerOpen}
+                        aria-controls="supported-app-picker"
+                        onClick={() => setAppPickerOpen((open) => !open)}
+                        className="min-h-10 w-full rounded-lg border border-base-border px-3 text-sm text-text-secondary hover:bg-base-card hover:text-text-primary"
+                      >
+                        + إضافة تطبيق
+                      </button>
+                    </div>
+
+                    {appPickerOpen && (
+                      <div id="supported-app-picker" className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
+                        <h3 className="text-sm font-medium text-text-primary">التطبيقات المدعومة</h3>
+                        <ul className="space-y-1">
+                          {SUPPORTED_APPS.map((app) => {
+                            const isAdded = app.id === 'whatsapp' || selectedApps.includes(app.id);
+                            return (
+                              <li key={app.id}>
+                                <button
+                                  type="button"
+                                  disabled={isAdded}
+                                  onClick={() => setSelectedApps((current) => [...current, app.id])}
+                                  className="flex min-h-10 w-full items-center gap-3 rounded-md px-2 text-right text-sm text-text-primary hover:bg-base-panel disabled:text-text-secondary"
+                                >
+                                  <span className="flex w-6 justify-center" aria-hidden="true">
+                                    <span className="h-2.5 w-2.5 rounded-full border border-gold/45 bg-gold/20" />
+                                  </span>
+                                  <span className="flex-1">{app.name}</span>
+                                  {isAdded && <span className="text-xs text-text-secondary">مضاف</span>}
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
+
+                    <aside className="rounded-lg border border-gold/20 bg-gold/5 p-3 text-xs leading-5 text-text-secondary">
+                      <p className="font-medium text-text-primary">قبل ربط أي تطبيق</p>
+                      <p className="mt-1">قد يطلب التطبيق صلاحيات للوصول إلى بياناتك. راجع الصلاحيات والبيانات التي ستتم مشاركتها، واسأل عن استخدامها في الذاكرة قبل الموافقة.</p>
+                      <p className="mt-2 text-gold/80">هذه لوحة اختيار فقط؛ لا يبدأ الربط ولا تُرسل بيانات أو طلبات حاليًا.</p>
+                    </aside>
                   </div>
                 ) : activeSection === 'learning' ? (
                   <div className="space-y-5">
