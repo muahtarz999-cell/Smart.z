@@ -10,6 +10,21 @@ function errorResponse(message, status) {
   return NextResponse.json({ error: true, message }, { status });
 }
 
+function sanitizeDiagnosticMessage(message, apiKey) {
+  if (typeof message !== 'string') return undefined;
+
+  let sanitized = apiKey ? message.split(apiKey).join('[REDACTED]') : message;
+  sanitized = sanitized
+    .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:gsk_[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b/gi, '[REDACTED]');
+
+  return sanitized.slice(0, 500);
+}
+
+function getErrorType(error) {
+  return typeof error?.name === 'string' ? error.name : 'Error';
+}
+
 export async function POST(request) {
   let body;
   try {
@@ -31,8 +46,9 @@ export async function POST(request) {
     );
   }
 
+  let groqResponse;
   try {
-    const groqResponse = await fetch(GROQ_ENDPOINT, {
+    groqResponse = await fetch(GROQ_ENDPOINT, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -46,19 +62,63 @@ export async function POST(request) {
         ],
       }),
     });
-
-    if (!groqResponse.ok) {
-      return errorResponse('Assistant service is temporarily unavailable.', 502);
-    }
-
-    const result = await groqResponse.json();
-    const reply = result.choices?.[0]?.message?.content;
-    if (typeof reply !== 'string' || !reply.trim()) {
-      return errorResponse('Assistant service returned an invalid response.', 502);
-    }
-
-    return NextResponse.json({ reply: reply.trim() });
-  } catch {
+  } catch (error) {
+    const causeCode = error?.cause?.code;
+    console.error('[Assistant API] Groq fetch failed', {
+      errorType: getErrorType(error),
+      message: sanitizeDiagnosticMessage(error?.message, apiKey),
+      ...(typeof causeCode === 'string'
+        ? { causeCode: sanitizeDiagnosticMessage(causeCode, apiKey) }
+        : typeof causeCode === 'number'
+          ? { causeCode }
+          : {}),
+    });
     return errorResponse('Assistant service is temporarily unavailable.', 502);
   }
+
+  if (!groqResponse.ok) {
+    let groqErrorMessage;
+    try {
+      const errorData = await groqResponse.json();
+      groqErrorMessage = sanitizeDiagnosticMessage(
+        errorData?.error?.message,
+        apiKey
+      );
+    } catch (error) {
+      console.error('[Assistant API] Groq error response JSON parsing failed', {
+        errorType: getErrorType(error),
+        status: groqResponse.status,
+      });
+    }
+
+    console.error('[Assistant API] Groq request failed', {
+      status: groqResponse.status,
+      ...(groqResponse.statusText ? { statusText: groqResponse.statusText } : {}),
+      ...(groqErrorMessage ? { groqErrorMessage } : {}),
+    });
+    return errorResponse('Assistant service is temporarily unavailable.', 502);
+  }
+
+  let result;
+  try {
+    result = await groqResponse.json();
+  } catch (error) {
+    console.error('[Assistant API] Groq success response JSON parsing failed', {
+      errorType: getErrorType(error),
+    });
+    return errorResponse('Assistant service is temporarily unavailable.', 502);
+  }
+
+  const reply = result?.choices?.[0]?.message?.content;
+  if (typeof reply !== 'string' || !reply.trim()) {
+    console.error('[Assistant API] Groq response missing reply content', {
+      responseType: result === null ? 'null' : Array.isArray(result) ? 'array' : typeof result,
+      choicesType: Array.isArray(result?.choices) ? 'array' : typeof result?.choices,
+      choiceCount: Array.isArray(result?.choices) ? result.choices.length : 0,
+      contentType: typeof reply,
+    });
+    return errorResponse('Assistant service returned an invalid response.', 502);
+  }
+
+  return NextResponse.json({ reply: reply.trim() });
 }
