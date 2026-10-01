@@ -1,16 +1,67 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import AssistantOrb from '../components/AssistantOrb';
+import { AudioFlowManager } from '../lib/audio-flow';
 
 export default function Home() {
   const [expanded, setExpanded] = useState(false);
   const [message, setMessage] = useState('');
   const [reply, setReply] = useState('');
   const [loading, setLoading] = useState(false);
+  const [orbState, setOrbState] = useState('idle');
+  const audioFlowRef = useRef(null);
 
   const orbSize = expanded ? 190 : 128;
   const panelMaxWidth = expanded ? 420 : 340;
+
+  // ابدأ AudioFlow عند تحميل المكوّن
+  useEffect(() => {
+    let audioFlow = null;
+
+    const initAudioFlow = async () => {
+      audioFlow = new AudioFlowManager({
+        onStateChange: (state) => {
+          console.log('[Page] Audio state:', state);
+          setOrbState(state);
+        },
+        onReply: (text) => {
+          setReply(text);
+        },
+      });
+
+      const started = await audioFlow.start();
+      if (!started) {
+        console.error('Failed to start audio flow');
+        setOrbState('error');
+      }
+
+      audioFlowRef.current = audioFlow;
+    };
+
+    initAudioFlow();
+
+    return () => {
+      if (audioFlowRef.current) {
+        audioFlowRef.current.stop();
+      }
+    };
+  }, []);
+
+  // عند المغادرة، تنظيف الموارد
+  useEffect(() => {
+    const cleanup = () => {
+      if (audioFlowRef.current) {
+        audioFlowRef.current.stop();
+      }
+    };
+
+    window.addEventListener('beforeunload', cleanup);
+    return () => {
+      window.removeEventListener('beforeunload', cleanup);
+      cleanup();
+    };
+  }, []);
 
   async function sendMessage(text) {
     if (!text.trim()) return;
@@ -57,7 +108,7 @@ export default function Home() {
 
           {/* الكرة والترحيب */}
           <div className="flex-1 flex flex-col items-center justify-center px-6 py-6">
-            <AssistantOrb size={orbSize} listening={!loading} />
+            <AssistantOrb size={orbSize} state={orbState} />
 
             <p className="text-text-primary text-base font-medium mt-5">
               أهلًا بك
