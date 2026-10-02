@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
+import { customerAccessResponse, requireAccountActive } from '../../../../../lib/customer-access';
 import {
-  createUserSupabase,
   verifySignedSignupState,
 } from '../../../../../lib/whatsapp-embedded-signup';
 
@@ -16,15 +16,10 @@ async function metaGet(path, accessToken) {
 }
 
 export async function POST(request) {
-  const userSupabase = createUserSupabase(request);
-  if (!userSupabase) {
-    return NextResponse.json({ error: true, message: 'سجّل الدخول إلى Smart.z أولًا.' }, { status: 401 });
-  }
-
-  const { data: { user }, error: authError } = await userSupabase.client.auth.getUser(userSupabase.accessToken);
-  if (authError || !user) {
-    return NextResponse.json({ error: true, message: 'انتهت جلسة الدخول. سجّل الدخول مجددًا.' }, { status: 401 });
-  }
+  const access = await requireAccountActive(request);
+  if (!access.ok) return customerAccessResponse(access);
+  const user = access.user;
+  const userSupabase = { client: access.client };
 
   const appId = process.env.META_APP_ID;
   const appSecret = process.env.META_APP_SECRET;

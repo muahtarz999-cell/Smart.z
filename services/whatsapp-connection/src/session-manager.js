@@ -1,6 +1,7 @@
 import makeWASocket, { Browsers, DisconnectReason } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import { destroyStoredAuthState, loadAuthState, listStoredUserIds } from './encrypted-auth-store.js';
+import { isCustomerEligible } from './customer-access.js';
 
 const sessions = new Map();
 const retryTimers = new Map();
@@ -84,8 +85,19 @@ function scheduleReconnect(session) {
   if (oldTimer) clearTimeout(oldTimer);
   retryTimers.set(session.userId, setTimeout(() => {
     retryTimers.delete(session.userId);
-    openSocket(session).catch(() => {
-      if (!session.userRequestedDisconnect) scheduleReconnect(session);
+    isCustomerEligible(session.admin, session.userId).then(async (eligible) => {
+      if (!eligible) {
+        session.userRequestedDisconnect = true;
+        await recordStatus(session, 'disconnected', { reason: 'account_not_active' });
+        return;
+      }
+      try {
+        await openSocket(session);
+      } catch {
+        if (!session.userRequestedDisconnect) scheduleReconnect(session);
+      }
+    }).catch(() => {
+      recordStatus(session, 'error', { reason: 'account_check_failed' }).catch(() => {});
     });
   }, delay));
 }
@@ -269,6 +281,7 @@ export async function restoreSession(userId, admin) {
 export async function restoreAllSessions(admin) {
   const userIds = await listStoredUserIds();
   for (const userId of userIds) {
+    if (!await isCustomerEligible(admin, userId)) continue;
     const { data: connection } = await admin.from('whatsapp_connections')
       .select('id,status')
       .eq('user_id', userId)
@@ -281,6 +294,22 @@ export async function restoreAllSessions(admin) {
     } catch {
       await setConnectionStatus(admin, userId, connection.id, 'error').catch(() => {});
       await writeEvent(admin, userId, connection.id, 'error', { reason: 'restore_failed' }).catch(() => {});
+    }
+  }
+}
+
+export async function revalidateSessions(admin) {
+  for (const session of sessions.values()) {
+    if (session.userRequestedDisconnect) continue;
+    if (!await isCustomerEligible(admin, session.userId)) {
+      session.userRequestedDisconnect = true;
+      const timer = retryTimers.get(session.userId);
+      if (timer) clearTimeout(timer);
+      retryTimers.delete(session.userId);
+      const socket = session.socket;
+      session.socket = null;
+      socket?.end(undefined);
+      await recordStatus(session, 'disconnected', { reason: 'account_not_active' }).catch(() => {});
     }
   }
 }

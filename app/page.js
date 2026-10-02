@@ -88,6 +88,7 @@ export default function Home() {
   const [authUser, setAuthUser] = useState(null);
   const [authSession, setAuthSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
+  const [customerAccess, setCustomerAccess] = useState({ status: 'checking', message: '' });
   const [authPanelOpen, setAuthPanelOpen] = useState(false);
   const [authMode, setAuthMode] = useState('signin');
   const [authEmail, setAuthEmail] = useState('');
@@ -149,6 +150,37 @@ export default function Home() {
       subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!authReady) return undefined;
+    let active = true;
+
+    if (!authUser || !authSession?.access_token) {
+      setCustomerAccess({ status: 'unauthenticated', message: 'سجّل الدخول للمتابعة.' });
+      return () => { active = false; };
+    }
+
+    setCustomerAccess({ status: 'checking', message: 'جارٍ التحقق من أهلية الحساب...' });
+    fetch('/api/auth/access', {
+      headers: { Authorization: `Bearer ${authSession.access_token}` },
+      cache: 'no-store',
+    }).then(async (response) => {
+      const result = await response.json();
+      if (!active) return;
+      if (response.ok && result.active === true && result.user?.id === authUser.id) {
+        setCustomerAccess({ status: 'active', message: '' });
+      } else {
+        setCustomerAccess({
+          status: 'denied',
+          message: result.message || 'الحساب بانتظار التفعيل.',
+        });
+      }
+    }).catch(() => {
+      if (active) setCustomerAccess({ status: 'error', message: 'تعذر التحقق من أهلية الحساب.' });
+    });
+
+    return () => { active = false; };
+  }, [authReady, authUser?.id, authSession?.access_token]);
 
   useEffect(() => {
     try {
@@ -309,10 +341,16 @@ export default function Home() {
 
   // ابدأ AudioFlow عند تحميل المكوّن
   useEffect(() => {
+    if (customerAccess.status !== 'active' || !authUser) return undefined;
+
     let audioFlow = null;
 
     const initAudioFlow = async () => {
       audioFlow = new AudioFlowManager({
+        getAccessToken: async () => {
+          const { data, error } = await supabase.auth.getSession();
+          return error ? null : data.session?.access_token ?? null;
+        },
         onStateChange: (state) => {
           console.log('[Page] Audio state:', state);
           setOrbState(state);
@@ -338,7 +376,7 @@ export default function Home() {
         audioFlowRef.current.stop();
       }
     };
-  }, []);
+  }, [customerAccess.status, authUser?.id]);
 
   // عند المغادرة، تنظيف الموارد
   useEffect(() => {
@@ -356,13 +394,16 @@ export default function Home() {
   }, []);
 
   async function sendMessage(text) {
-    if (!text.trim()) return;
+    if (!text.trim() || customerAccess.status !== 'active' || !authSession?.access_token) return;
     setLoading(true);
     setReply('');
     try {
       const res = await fetch('/api/assistant', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${authSession.access_token}`,
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({ message: text }),
       });
       const data = await res.json();
@@ -612,7 +653,13 @@ export default function Home() {
               ☰
             </button>
             <span className="text-xs text-text-secondary">
-              {loading ? 'جاري التفكير...' : 'يستمع الآن'}
+              {customerAccess.status === 'checking'
+                ? 'جارٍ التحقق من الحساب...'
+                : customerAccess.status !== 'active'
+                  ? 'يتطلب حسابًا مفعّلًا'
+                  : loading
+                    ? 'جاري التفكير...'
+                    : 'يستمع الآن'}
             </span>
             <button
               aria-label={expanded ? 'تصغير الشاشة' : 'توسيع الشاشة'}
@@ -623,42 +670,57 @@ export default function Home() {
             </button>
           </div>
 
-          {/* الكرة والترحيب */}
-          <div className="flex-1 flex flex-col items-center justify-center px-6 py-6">
-            <AssistantOrb size={orbSize} state={orbState} />
+          {customerAccess.status === 'active' ? (
+            <>
+              {/* الكرة والترحيب */}
+              <div className="flex-1 flex flex-col items-center justify-center px-6 py-6">
+                <AssistantOrb size={orbSize} state={orbState} />
 
-            <p className="text-text-primary text-base font-medium mt-5">
-              أهلًا بك
-            </p>
-            <p className="text-text-secondary text-xs mt-1 text-center">
-              {reply || 'قل لي بماذا أساعدك'}
-            </p>
-          </div>
+                <p className="text-text-primary text-base font-medium mt-5">
+                  أهلًا بك
+                </p>
+                <p className="text-text-secondary text-xs mt-1 text-center">
+                  {reply || 'قل لي بماذا أساعدك'}
+                </p>
+              </div>
 
-          {/* شريط الإدخال */}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              sendMessage(message);
-              setMessage('');
-            }}
-            className="flex items-center gap-2 px-4 py-3 border-t border-base-border"
-          >
-            <input
-              type="text"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder="اسأل المساعد أي شيء"
-              className="flex-1 bg-base-card border border-base-border text-text-primary rounded-lg h-10 px-3 text-sm text-right"
-            />
-            <button
-              type="submit"
-              className="w-10 h-10 rounded-full bg-gold flex items-center justify-center flex-shrink-0"
-              aria-label="إرسال"
-            >
-              ➤
-            </button>
-          </form>
+              {/* شريط الإدخال */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  sendMessage(message);
+                  setMessage('');
+                }}
+                className="flex items-center gap-2 px-4 py-3 border-t border-base-border"
+              >
+                <input
+                  type="text"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  placeholder="اسأل المساعد أي شيء"
+                  className="flex-1 bg-base-card border border-base-border text-text-primary rounded-lg h-10 px-3 text-sm text-right"
+                />
+                <button
+                  type="submit"
+                  className="w-10 h-10 rounded-full bg-gold flex items-center justify-center flex-shrink-0"
+                  aria-label="إرسال"
+                >
+                  ➤
+                </button>
+              </form>
+            </>
+          ) : (
+            <div className="flex min-h-[360px] flex-col items-center justify-center gap-3 px-6 py-8 text-center">
+              <p className="text-sm font-medium text-text-primary">
+                {customerAccess.status === 'checking' ? 'جارٍ التحقق من أهلية الحساب...' : 'الوصول إلى Smart.z'}
+              </p>
+              {customerAccess.status !== 'checking' && (
+                <p role="status" className="max-w-xs text-xs leading-5 text-text-secondary">
+                  {customerAccess.message || 'يُرجى تسجيل الدخول أو التواصل مع إدارة الحساب لتفعيله.'}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

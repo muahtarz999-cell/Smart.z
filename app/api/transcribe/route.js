@@ -1,8 +1,12 @@
 ﻿export const runtime = 'edge';
 
 import { NextResponse } from 'next/server';
+import { customerAccessResponse, requireAccountActive } from '../../../lib/customer-access';
 
 export async function POST(req) {
+  const access = await requireAccountActive(req);
+  if (!access.ok) return customerAccessResponse(access);
+
   try {
     // ط§ط³طھظ‚ط¨ظ„ ط§ظ„طµظˆطھ ظ…ظ† ط§ظ„ط¹ظ…ظٹظ„
     const formData = await req.formData();

@@ -6,8 +6,10 @@ import {
   disconnectSession,
   getStatus,
   reconnectSession,
+  revalidateSessions,
   restoreAllSessions,
 } from './session-manager.js';
+import { authenticateRequest } from './customer-access.js';
 
 const port = Number(process.env.PORT || 8788);
 const allowedOrigin = process.env.SMARTZ_ORIGIN;
@@ -51,14 +53,6 @@ function readJson(request) {
   });
 }
 
-async function resolveUser(request) {
-  const bearer = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
-  if (!bearer) return null;
-  const { data, error } = await authClient.auth.getUser(bearer);
-  if (error || !data.user?.id) return null;
-  return data.user.id;
-}
-
 const server = createServer(async (request, response) => {
   const origin = request.headers.origin;
   if (origin !== allowedOrigin) {
@@ -84,12 +78,15 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  let userId;
-  try { userId = await resolveUser(request); } catch { userId = null; }
-  if (!userId) {
-    sendJson(response, 401, { error: 'AUTH_REQUIRED' }, allowedOrigin);
+  let access;
+  try { access = await authenticateRequest(request, authClient, adminClient); } catch {
+    access = { ok: false, status: 503, error: 'ACCESS_CHECK_FAILED' };
+  }
+  if (!access.ok) {
+    sendJson(response, access.status, { error: access.error }, allowedOrigin);
     return;
   }
+  const userId = access.userId;
 
   try {
     let result;
@@ -119,3 +116,7 @@ const server = createServer(async (request, response) => {
 
 await restoreAllSessions(adminClient);
 server.listen(port, '0.0.0.0');
+const customerAccessMonitor = setInterval(() => {
+  revalidateSessions(adminClient).catch(() => {});
+}, 60_000);
+customerAccessMonitor.unref();
