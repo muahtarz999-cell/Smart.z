@@ -1,0 +1,16 @@
+{
+  "name": "smartz-whatsapp-connection-service",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "@whiskeysockets/baileys": "^6.7.18",
+    "qrcode": "^1.5.4"
+  }
+}

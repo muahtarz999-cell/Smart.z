@@ -26,6 +26,7 @@ const PROFILE_STORAGE_KEY = 'smart-assistant-profile';
 const PRIVACY_STORAGE_KEY = 'smart-assistant-privacy-enabled';
 const MEMORY_STORAGE_KEY = 'smart-assistant-memories';
 const LOCATION_SHARING_STORAGE_KEY = 'smart-assistant-location-sharing';
+const WHATSAPP_QR_SERVICE_URL = process.env.NEXT_PUBLIC_WHATSAPP_CONNECTION_SERVICE_URL;
 const DEFAULT_PROFILE = {
   name: '',
   responseStyle: 'medium',
@@ -96,8 +97,12 @@ export default function Home() {
   const [authNotice, setAuthNotice] = useState('');
   const [whatsappBusy, setWhatsappBusy] = useState(false);
   const [whatsappError, setWhatsappError] = useState('');
-  const [whatsappConnection, setWhatsappConnection] = useState(null);
+  const [whatsappMetaConnection, setWhatsappMetaConnection] = useState(null);
+  const [whatsappQrConnection, setWhatsappQrConnection] = useState(null);
   const [whatsappPhoneNumber, setWhatsappPhoneNumber] = useState('');
+  const [whatsappQrStatus, setWhatsappQrStatus] = useState('disconnected');
+  const [whatsappQrDataUrl, setWhatsappQrDataUrl] = useState(null);
+  const [whatsappQrError, setWhatsappQrError] = useState('');
   const [message, setMessage] = useState('');
   const [reply, setReply] = useState('');
   const [loading, setLoading] = useState(false);
@@ -268,6 +273,39 @@ export default function Home() {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (activeSection !== 'apps' || !authSession?.access_token || !WHATSAPP_QR_SERVICE_URL) return undefined;
+    let active = true;
+
+    const refreshQrStatus = async () => {
+      try {
+        const response = await fetch(`${WHATSAPP_QR_SERVICE_URL}/api/whatsapp/status`, {
+          headers: { Authorization: `Bearer ${authSession.access_token}` },
+          cache: 'no-store',
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error('تعذر جلب حالة WhatsApp QR.');
+        if (!active) return;
+        setWhatsappQrStatus(result.status || 'disconnected');
+        setWhatsappQrDataUrl(result.qrDataUrl || null);
+        if (result.status === 'connected') {
+          setWhatsappQrConnection({ phoneNumber: result.phoneNumber });
+        } else {
+          setWhatsappQrConnection(null);
+        }
+      } catch (error) {
+        if (active) setWhatsappQrError(error?.message || 'تعذر الاتصال بخدمة WhatsApp.');
+      }
+    };
+
+    refreshQrStatus();
+    const timer = window.setInterval(refreshQrStatus, 4000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [activeSection, authSession?.access_token]);
 
   // ابدأ AudioFlow عند تحميل المكوّن
   useEffect(() => {
@@ -476,10 +514,44 @@ export default function Home() {
       });
       const callbackResult = await callbackResponse.json();
       if (!callbackResponse.ok) throw new Error(callbackResult.message || 'تعذر إكمال ربط WhatsApp.');
-      setWhatsappConnection(callbackResult.connection);
+      setWhatsappMetaConnection(callbackResult.connection);
       setWhatsappPhoneNumber('');
     } catch (error) {
       setWhatsappError(error?.message || 'تعذر بدء الربط الرسمي حاليًا.');
+    } finally {
+      setWhatsappBusy(false);
+    }
+  }
+
+  async function callWhatsAppQrService(path, method = 'POST') {
+    if (!authSession?.access_token) {
+      setWhatsappQrError('سجّل الدخول إلى Smart.z أولًا.');
+      return;
+    }
+    if (!WHATSAPP_QR_SERVICE_URL) {
+      setWhatsappQrError('خدمة WhatsApp QR غير مُعدة بعد.');
+      return;
+    }
+
+    setWhatsappBusy(true);
+    setWhatsappQrError('');
+    try {
+      const response = await fetch(`${WHATSAPP_QR_SERVICE_URL}${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${authSession.access_token}` },
+        cache: 'no-store',
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error('تعذر تنفيذ طلب جلسة WhatsApp QR.');
+      setWhatsappQrStatus(result.status || 'disconnected');
+      setWhatsappQrDataUrl(result.qrDataUrl || null);
+      if (result.status === 'connected') {
+        setWhatsappQrConnection({ phoneNumber: result.phoneNumber });
+      } else {
+        setWhatsappQrConnection(null);
+      }
+    } catch (error) {
+      setWhatsappQrError(error?.message || 'تعذر الاتصال بخدمة WhatsApp QR.');
     } finally {
       setWhatsappBusy(false);
     }
@@ -842,9 +914,9 @@ export default function Home() {
                           </span>
                           <div className="min-w-0 flex-1">
                             <span className="block text-sm text-text-primary">WhatsApp</span>
-                            {whatsappConnection ? (
+                            {whatsappMetaConnection ? (
                               <span className="mt-1 block text-xs text-text-secondary">
-                                مرتبط{whatsappConnection.displayPhoneNumber ? ` · ${whatsappConnection.displayPhoneNumber}` : ''}
+                                مرتبط{whatsappMetaConnection.displayPhoneNumber ? ` · ${whatsappMetaConnection.displayPhoneNumber}` : ''}
                               </span>
                             ) : (
                               <span className="mt-1 block text-xs text-text-secondary">{whatsappBusy ? 'جارٍ الربط...' : 'غير مرتبط'}</span>
@@ -853,12 +925,66 @@ export default function Home() {
                           <div className="flex flex-wrap justify-end gap-2">
                             <button
                               type="button"
-                              disabled
-                              className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary opacity-70"
+                              disabled={whatsappBusy || !authUser}
+                              onClick={() => callWhatsAppQrService('/api/whatsapp/session')}
+                              className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-panel disabled:opacity-60"
                             >
-                              ربط عبر QR
+                              {whatsappQrStatus === 'needs_reauth' ? 'إعادة الربط عبر QR' : 'ربط عبر QR'}
                             </button>
                           </div>
+                        </li>
+                        <li className="rounded-lg border border-base-border bg-base-card p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-xs text-text-secondary">
+                              حالة QR: {{
+                                connected: 'متصل',
+                                pending: 'بانتظار المسح',
+                                disconnected: 'غير متصل',
+                                reconnecting: 'جارٍ إعادة الاتصال',
+                                needs_reauth: 'يحتاج WhatsApp إلى إعادة الربط',
+                                error: 'حدث خطأ',
+                              }[whatsappQrStatus] || 'غير متصل'}
+                              {whatsappQrConnection?.phoneNumber ? ` · ${whatsappQrConnection.phoneNumber}` : ''}
+                            </span>
+                            {['connected', 'disconnected', 'reconnecting'].includes(whatsappQrStatus) && (
+                              <div className="flex gap-2">
+                                {whatsappQrStatus === 'connected' ? (
+                                  <button
+                                    type="button"
+                                    disabled={whatsappBusy}
+                                    onClick={() => callWhatsAppQrService('/api/whatsapp/disconnect')}
+                                    className="text-xs text-text-secondary hover:text-text-primary disabled:opacity-50"
+                                  >
+                                    فصل
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={whatsappBusy || whatsappQrStatus === 'reconnecting'}
+                                    onClick={() => callWhatsAppQrService('/api/whatsapp/reconnect')}
+                                    className="text-xs text-gold disabled:opacity-50"
+                                  >
+                                    إعادة الاتصال
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          {whatsappQrDataUrl && whatsappQrStatus === 'pending' && (
+                            <div className="mt-3 flex flex-col items-center gap-2">
+                              <img src={whatsappQrDataUrl} alt="رمز QR مؤقت لربط WhatsApp" className="h-56 w-56 rounded-lg bg-white p-2" />
+                              <p className="text-center text-xs text-text-secondary">امسح الرمز من تطبيق WhatsApp. الرمز مؤقت ويتجدد تلقائيًا.</p>
+                            </div>
+                          )}
+                          {whatsappQrStatus === 'needs_reauth' && (
+                            <p className="mt-2 text-xs text-text-secondary">يحتاج WhatsApp إلى إعادة الربط.</p>
+                          )}
+                          {!WHATSAPP_QR_SERVICE_URL && (
+                            <p className="mt-2 text-xs text-text-secondary">خدمة WhatsApp QR غير مُعدة بعد.</p>
+                          )}
+                          {whatsappQrError && (
+                            <p role="alert" className="mt-2 text-xs text-red-300">{whatsappQrError}</p>
+                          )}
                         </li>
                         {selectedApps.map((appId) => {
                           const app = SUPPORTED_APPS.find((supportedApp) => supportedApp.id === appId);
@@ -874,7 +1000,7 @@ export default function Home() {
                           );
                         })}
                       </ul>
-                      {!whatsappConnection && (
+                      {!whatsappMetaConnection && (
                         <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">
                           <label htmlFor="whatsapp-business-phone" className="block text-xs text-text-secondary">
                             رقم WhatsApp Business
