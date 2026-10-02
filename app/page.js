@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import AssistantOrb from '../components/AssistantOrb';
 import { AudioFlowManager } from '../lib/audio-flow';
 import { clearAllMessages } from '../lib/conversation';
+import { isSupabaseConfigured, supabase } from '../lib/supabase';
 
 const MENU_SECTIONS = [
   { id: 'profile', label: 'ملفي' },
@@ -31,6 +32,41 @@ const DEFAULT_PROFILE = {
   language: 'ar',
 };
 
+let metaSdkPromise = null;
+
+function loadMetaSdk(appId) {
+  if (typeof window.FB !== 'undefined') {
+    if (window.__smartMetaSdkAppId !== appId) {
+      window.FB.init({ appId, cookie: true, xfbml: false });
+      window.__smartMetaSdkAppId = appId;
+    }
+    return Promise.resolve(window.FB);
+  }
+
+  if (!metaSdkPromise) {
+    metaSdkPromise = new Promise((resolve, reject) => {
+      window.fbAsyncInit = () => {
+        window.FB.init({ appId, cookie: true, xfbml: false });
+        window.__smartMetaSdkAppId = appId;
+        resolve(window.FB);
+      };
+
+      const script = document.createElement('script');
+      script.async = true;
+      script.defer = true;
+      script.crossOrigin = 'anonymous';
+      script.src = 'https://connect.facebook.net/en_US/sdk.js';
+      script.onerror = () => {
+        metaSdkPromise = null;
+        reject(new Error('تعذر تحميل مكتبة Meta.'));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  return metaSdkPromise;
+}
+
 export default function Home() {
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -41,21 +77,73 @@ export default function Home() {
   const [selectedApps, setSelectedApps] = useState([]);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [profileLoaded, setProfileLoaded] = useState(false);
+  const [profileSaveNotice, setProfileSaveNotice] = useState('');
   const [privacyEnabled, setPrivacyEnabled] = useState(true);
   const [privacyLoaded, setPrivacyLoaded] = useState(false);
   const [savedMemories, setSavedMemories] = useState([]);
   const [memoriesLoaded, setMemoriesLoaded] = useState(false);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [privacyMessage, setPrivacyMessage] = useState('');
+  const [authUser, setAuthUser] = useState(null);
+  const [authSession, setAuthSession] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authPanelOpen, setAuthPanelOpen] = useState(false);
+  const [authMode, setAuthMode] = useState('signin');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authNotice, setAuthNotice] = useState('');
+  const [whatsappBusy, setWhatsappBusy] = useState(false);
+  const [whatsappError, setWhatsappError] = useState('');
+  const [whatsappConnection, setWhatsappConnection] = useState(null);
+  const [whatsappPhoneNumber, setWhatsappPhoneNumber] = useState('');
   const [message, setMessage] = useState('');
   const [reply, setReply] = useState('');
   const [loading, setLoading] = useState(false);
   const [orbState, setOrbState] = useState('idle');
   const audioFlowRef = useRef(null);
   const skipProfileSaveRef = useRef(false);
+  const profileEditPendingRef = useRef(false);
 
   const orbSize = expanded ? 190 : 128;
   const panelMaxWidth = expanded ? 420 : 340;
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      setAuthReady(true);
+      return undefined;
+    }
+
+    let active = true;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      window.setTimeout(() => {
+        if (active) {
+          setAuthUser(session?.user ?? null);
+          setAuthSession(session);
+          setAuthReady(true);
+        }
+      }, 0);
+    });
+
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      if (error) setAuthError('تعذر استعادة جلسة المستخدم.');
+      setAuthUser(data.session?.user ?? null);
+      setAuthSession(data.session ?? null);
+      setAuthReady(true);
+    }).catch(() => {
+      if (!active) return;
+      setAuthError('تعذر استعادة جلسة المستخدم.');
+      setAuthSession(null);
+      setAuthReady(true);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -85,10 +173,18 @@ export default function Home() {
       skipProfileSaveRef.current = false;
       return;
     }
+    const shouldShowSaveNotice = profileEditPendingRef.current;
+    profileEditPendingRef.current = false;
     try {
       localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+      if (shouldShowSaveNotice) {
+        setProfileSaveNotice('تم حفظ الإعدادات على هذا الجهاز.');
+      }
     } catch (error) {
       console.warn('[Profile] Could not save profile locally:', error);
+      if (shouldShowSaveNotice) {
+        setProfileSaveNotice('تعذر حفظ الإعدادات على هذا الجهاز.');
+      }
     }
   }, [profile, profileLoaded]);
 
@@ -237,6 +333,155 @@ export default function Home() {
       setReply('تعذر الاتصال بالمساعد الآن.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function submitAuth(event) {
+    event.preventDefault();
+    if (!supabase || authBusy) return;
+
+    setAuthBusy(true);
+    setAuthError('');
+    setAuthNotice('');
+    try {
+      if (authMode === 'signup') {
+        const { data, error } = await supabase.auth.signUp({
+          email: authEmail.trim(),
+          password: authPassword,
+        });
+        if (error) throw error;
+        if (!data.session) {
+          setAuthNotice('تم إنشاء الحساب. تحقق من بريدك لتأكيده ثم سجّل الدخول.');
+        } else {
+          setAuthNotice('تم إنشاء الحساب وتسجيل الدخول.');
+        }
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: authEmail.trim(),
+          password: authPassword,
+        });
+        if (error) throw error;
+        setAuthNotice('تم تسجيل الدخول بنجاح.');
+      }
+      setAuthPassword('');
+    } catch (error) {
+      setAuthError(error?.message || 'تعذر إكمال عملية المصادقة.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    if (!supabase || authBusy) return;
+    setAuthBusy(true);
+    setAuthError('');
+    setAuthNotice('');
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      setAuthPanelOpen(false);
+      setAuthNotice('تم تسجيل الخروج.');
+    } catch (error) {
+      setAuthError(error?.message || 'تعذر تسجيل الخروج.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function startOfficialWhatsAppSignup() {
+    if (!authUser || !authSession?.access_token) {
+      setWhatsappError('سجّل الدخول إلى Smart.z قبل ربط WhatsApp.');
+      return;
+    }
+
+    const normalizedPhoneNumber = whatsappPhoneNumber.replace(/[\s()-]/g, '');
+    if (!/^\+[1-9]\d{7,14}$/.test(normalizedPhoneNumber)) {
+      setWhatsappError('أدخل رقمًا بصيغة دولية، مثل ‎+14155552671.');
+      return;
+    }
+
+    setWhatsappBusy(true);
+    setWhatsappError('');
+    try {
+      const startResponse = await fetch('/api/whatsapp/embedded-signup/start', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authSession.access_token}` },
+      });
+      const config = await startResponse.json();
+      if (!startResponse.ok) {
+        if (config.code === 'META_SETUP_INCOMPLETE') {
+          throw new Error('إعداد الربط الرسمي غير مكتمل حاليًا.');
+        }
+        throw new Error(config.message || 'تعذر بدء الربط الرسمي حاليًا.');
+      }
+
+      const facebook = await loadMetaSdk(config.appId);
+      const result = await new Promise((resolve, reject) => {
+        let authCode = null;
+        let signupData = null;
+        const timeout = window.setTimeout(() => finish(new Error('انتهت مهلة التسجيل لدى Meta.')), 120000);
+
+        const finish = (error, value) => {
+          window.clearTimeout(timeout);
+          window.removeEventListener('message', onMetaMessage);
+          if (error) reject(error);
+          else resolve(value);
+        };
+
+        const onMetaMessage = (event) => {
+          let payload = event.data;
+          if (typeof payload === 'string') {
+            try { payload = JSON.parse(payload); } catch { return; }
+          }
+          const host = (() => { try { return new URL(event.origin).hostname; } catch { return ''; } })();
+          if (!host.endsWith('facebook.com') || payload?.type !== 'WA_EMBEDDED_SIGNUP') return;
+
+          if (payload.event === 'CANCEL' || payload.event === 'ERROR') {
+            finish(new Error('تم إلغاء تسجيل WhatsApp لدى Meta.'));
+            return;
+          }
+          if (payload.event === 'FINISH') {
+            signupData = payload.data || {};
+            if (authCode && signupData.waba_id && signupData.phone_number_id) {
+              finish(null, { code: authCode, wabaId: String(signupData.waba_id), phoneNumberId: String(signupData.phone_number_id) });
+            }
+          }
+        };
+
+        window.addEventListener('message', onMetaMessage);
+        facebook.login((response) => {
+          authCode = response?.authResponse?.code || null;
+          if (!authCode && response?.status !== 'unknown') {
+            finish(new Error('لم تُرجع Meta رمز التسجيل.'));
+            return;
+          }
+          if (authCode && signupData?.waba_id && signupData?.phone_number_id) {
+            finish(null, { code: authCode, wabaId: String(signupData.waba_id), phoneNumberId: String(signupData.phone_number_id) });
+          }
+        }, {
+          config_id: config.configId,
+          response_type: 'code',
+          override_default_response_type: true,
+          extras: { setup: {} },
+        });
+      });
+
+      const callbackResponse = await fetch('/api/whatsapp/embedded-signup/callback', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authSession.access_token}`,
+        },
+        body: JSON.stringify({ ...result, state: config.state }),
+      });
+      const callbackResult = await callbackResponse.json();
+      if (!callbackResponse.ok) throw new Error(callbackResult.message || 'تعذر إكمال ربط WhatsApp.');
+      setWhatsappConnection(callbackResult.connection);
+      setWhatsappPhoneNumber('');
+    } catch (error) {
+      setWhatsappError(error?.message || 'تعذر بدء الربط الرسمي حاليًا.');
+    } finally {
+      setWhatsappBusy(false);
     }
   }
 
@@ -390,6 +635,111 @@ export default function Home() {
               </button>
             </div>
 
+            <section className="space-y-3 border-b border-base-border px-5 py-4" aria-label="حساب المستخدم">
+              {!isSupabaseConfigured ? (
+                <p role="status" className="text-xs leading-5 text-text-secondary">
+                  إعداد Supabase Auth غير مكتمل. أضف عنوان المشروع والمفتاح العام في بيئة التشغيل.
+                </p>
+              ) : !authReady ? (
+                <p className="text-xs text-text-secondary">جارٍ التحقق من الجلسة...</p>
+              ) : authUser ? (
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-text-secondary">مسجل الدخول</p>
+                    <p className="truncate text-sm text-text-primary" dir="ltr">{authUser.email}</p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={authBusy}
+                    onClick={signOut}
+                    className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-card hover:text-text-primary disabled:opacity-50"
+                  >
+                    تسجيل الخروج
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs text-text-secondary">غير مسجل الدخول</p>
+                      <p className="text-sm text-text-primary">حساب Smart.z</p>
+                    </div>
+                    <button
+                      type="button"
+                      aria-expanded={authPanelOpen}
+                      onClick={() => {
+                        setAuthPanelOpen((open) => !open);
+                        setAuthError('');
+                        setAuthNotice('');
+                      }}
+                      className="min-h-9 rounded-lg border border-gold/40 px-3 text-xs text-gold hover:bg-gold/10"
+                    >
+                      {authPanelOpen ? 'إغلاق' : 'تسجيل الدخول'}
+                    </button>
+                  </div>
+
+                  {authPanelOpen && (
+                    <form onSubmit={submitAuth} className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          aria-pressed={authMode === 'signin'}
+                          onClick={() => { setAuthMode('signin'); setAuthError(''); setAuthNotice(''); }}
+                          className={`min-h-9 rounded-md border text-xs ${authMode === 'signin' ? 'border-gold/50 bg-gold/10 text-gold' : 'border-base-border text-text-secondary'}`}
+                        >
+                          تسجيل الدخول
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={authMode === 'signup'}
+                          onClick={() => { setAuthMode('signup'); setAuthError(''); setAuthNotice(''); }}
+                          className={`min-h-9 rounded-md border text-xs ${authMode === 'signup' ? 'border-gold/50 bg-gold/10 text-gold' : 'border-base-border text-text-secondary'}`}
+                        >
+                          إنشاء حساب
+                        </button>
+                      </div>
+                      <label className="block space-y-1.5">
+                        <span className="text-xs text-text-secondary">البريد الإلكتروني</span>
+                        <input
+                          type="email"
+                          required
+                          autoComplete="email"
+                          value={authEmail}
+                          onChange={(event) => setAuthEmail(event.target.value)}
+                          className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-left text-sm text-text-primary"
+                          dir="ltr"
+                        />
+                      </label>
+                      <label className="block space-y-1.5">
+                        <span className="text-xs text-text-secondary">كلمة المرور</span>
+                        <input
+                          type="password"
+                          required
+                          minLength={6}
+                          autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'}
+                          value={authPassword}
+                          onChange={(event) => setAuthPassword(event.target.value)}
+                          className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-left text-sm text-text-primary"
+                          dir="ltr"
+                        />
+                      </label>
+                      <button
+                        type="submit"
+                        disabled={authBusy}
+                        className="min-h-10 w-full rounded-lg border border-gold/50 bg-gold/10 px-3 text-sm text-gold disabled:opacity-50"
+                      >
+                        {authBusy ? 'جارٍ التنفيذ...' : authMode === 'signup' ? 'إنشاء حساب' : 'دخول'}
+                      </button>
+                      {authError && <p role="alert" className="text-xs leading-5 text-red-300">{authError}</p>}
+                      {authNotice && <p role="status" className="text-xs leading-5 text-text-secondary">{authNotice}</p>}
+                    </form>
+                  )}
+                </div>
+              )}
+              {authError && authUser && <p role="alert" className="text-xs text-red-300">{authError}</p>}
+              {authNotice && authUser && <p role="status" className="text-xs text-text-secondary">{authNotice}</p>}
+            </section>
+
             {activeSection ? (
               <div className="flex-1 overflow-y-auto px-5 py-6">
                 {activeSection === 'profile' ? (
@@ -404,7 +754,11 @@ export default function Home() {
                       <input
                         type="text"
                         value={profile.name}
-                        onChange={(event) => setProfile((current) => ({ ...current, name: event.target.value }))}
+                        onChange={(event) => {
+                          profileEditPendingRef.current = true;
+                          setProfile((current) => ({ ...current, name: event.target.value }));
+                          setProfileSaveNotice('');
+                        }}
                         placeholder="اكتب اسمك"
                         autoComplete="name"
                         className="h-11 w-full rounded-lg border border-base-border bg-base-card px-3 text-right text-sm text-text-primary placeholder:text-text-secondary focus:border-gold"
@@ -423,7 +777,11 @@ export default function Home() {
                             key={option.value}
                             type="button"
                             aria-pressed={profile.responseStyle === option.value}
-                            onClick={() => setProfile((current) => ({ ...current, responseStyle: option.value }))}
+                            onClick={() => {
+                              profileEditPendingRef.current = true;
+                              setProfile((current) => ({ ...current, responseStyle: option.value }));
+                              setProfileSaveNotice('');
+                            }}
                             className={`min-h-10 rounded-lg border px-2 text-xs transition-colors ${
                               profile.responseStyle === option.value
                                 ? 'border-gold/60 bg-gold/10 text-gold'
@@ -447,7 +805,11 @@ export default function Home() {
                             key={option.value}
                             type="button"
                             aria-pressed={profile.language === option.value}
-                            onClick={() => setProfile((current) => ({ ...current, language: option.value }))}
+                            onClick={() => {
+                              profileEditPendingRef.current = true;
+                              setProfile((current) => ({ ...current, language: option.value }));
+                              setProfileSaveNotice('');
+                            }}
                             className={`min-h-10 rounded-lg border px-3 text-sm transition-colors ${
                               profile.language === option.value
                                 ? 'border-gold/60 bg-gold/10 text-gold'
@@ -459,6 +821,11 @@ export default function Home() {
                         ))}
                       </div>
                     </fieldset>
+                    {profileSaveNotice && (
+                      <p role="status" className="text-xs text-text-secondary">
+                        {profileSaveNotice}
+                      </p>
+                    )}
                   </div>
                 ) : activeSection === 'apps' ? (
                   <div className="space-y-5">
@@ -473,14 +840,25 @@ export default function Home() {
                           <span className="flex w-7 justify-center" aria-hidden="true">
                             <span className="h-3 w-3 rounded-full border border-gold/45 bg-gold/20 shadow-[inset_0_0_5px_rgba(201,168,104,0.18)]" />
                           </span>
-                          <span className="min-w-0 flex-1 text-sm text-text-primary">WhatsApp</span>
-                          <button
-                            type="button"
-                            disabled
-                            className="min-h-9 min-w-16 rounded-lg border border-base-border px-3 text-xs text-text-secondary opacity-70"
-                          >
-                            ربط
-                          </button>
+                          <div className="min-w-0 flex-1">
+                            <span className="block text-sm text-text-primary">WhatsApp</span>
+                            {whatsappConnection ? (
+                              <span className="mt-1 block text-xs text-text-secondary">
+                                مرتبط{whatsappConnection.displayPhoneNumber ? ` · ${whatsappConnection.displayPhoneNumber}` : ''}
+                              </span>
+                            ) : (
+                              <span className="mt-1 block text-xs text-text-secondary">{whatsappBusy ? 'جارٍ الربط...' : 'غير مرتبط'}</span>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <button
+                              type="button"
+                              disabled
+                              className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary opacity-70"
+                            >
+                              ربط عبر QR
+                            </button>
+                          </div>
                         </li>
                         {selectedApps.map((appId) => {
                           const app = SUPPORTED_APPS.find((supportedApp) => supportedApp.id === appId);
@@ -496,6 +874,46 @@ export default function Home() {
                           );
                         })}
                       </ul>
+                      {!whatsappConnection && (
+                        <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">
+                          <label htmlFor="whatsapp-business-phone" className="block text-xs text-text-secondary">
+                            رقم WhatsApp Business
+                          </label>
+                          <input
+                            id="whatsapp-business-phone"
+                            type="tel"
+                            inputMode="tel"
+                            autoComplete="tel"
+                            dir="ltr"
+                            value={whatsappPhoneNumber}
+                            onChange={(event) => {
+                              setWhatsappPhoneNumber(event.target.value);
+                              setWhatsappError('');
+                            }}
+                            placeholder="+14155552671"
+                            className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-left text-sm text-text-primary placeholder:text-text-secondary"
+                          />
+                          <p className="text-xs leading-5 text-text-secondary">
+                            أدخل الرقم بالصيغة الدولية مع رمز الدولة. ستستخدم Meta الرقم كمرجع وتكمل التحقق والتفويض؛ الإدخال وحده لا يثبت الملكية.
+                          </p>
+                          <button
+                            type="button"
+                            disabled={whatsappBusy || !authUser}
+                            onClick={startOfficialWhatsAppSignup}
+                            className="min-h-10 w-full rounded-lg border border-gold/40 px-3 text-sm text-gold hover:bg-gold/10 disabled:border-base-border disabled:text-text-secondary disabled:opacity-70"
+                          >
+                            {whatsappBusy ? 'جارٍ بدء الربط...' : 'متابعة الربط الرسمي'}
+                          </button>
+                        </div>
+                      )}
+                      {whatsappError && (
+                        <p role="alert" className="rounded-lg border border-gold/20 bg-gold/5 px-3 py-2 text-xs leading-5 text-text-secondary">
+                          {whatsappError}
+                        </p>
+                      )}
+                      {!authUser && authReady && (
+                        <p className="text-xs text-text-secondary">سجّل الدخول لربط WhatsApp بحسابك.</p>
+                      )}
 
                       <button
                         type="button"
