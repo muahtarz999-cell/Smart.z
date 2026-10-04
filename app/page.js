@@ -5,6 +5,13 @@ import AssistantOrb from '../components/AssistantOrb';
 import { AudioFlowManager } from '../lib/audio-flow';
 import { clearAllMessages } from '../lib/conversation';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import {
+  getArabicVoices,
+  getSelectedVoiceId,
+  getVoiceId,
+  saveSelectedVoiceId,
+  speak,
+} from '../lib/tts';
 
 const MENU_SECTIONS = [
   { id: 'profile', label: 'ملفي' },
@@ -107,6 +114,11 @@ export default function Home() {
   const [message, setMessage] = useState('');
   const [reply, setReply] = useState('');
   const [loading, setLoading] = useState(false);
+  const [availableArabicVoices, setAvailableArabicVoices] = useState([]);
+  const [selectedVoiceId, setSelectedVoiceId] = useState('auto');
+  const [audioSettingsMessage, setAudioSettingsMessage] = useState('');
+  const [audioPreviewing, setAudioPreviewing] = useState(false);
+  const [audioSupported, setAudioSupported] = useState(true);
   const [orbState, setOrbState] = useState('idle');
   const audioFlowRef = useRef(null);
   const skipProfileSaveRef = useRef(false);
@@ -338,6 +350,23 @@ export default function Home() {
       window.clearInterval(timer);
     };
   }, [activeSection, authSession?.access_token]);
+
+  useEffect(() => {
+    if (activeSection !== 'audio') return undefined;
+    const synthesis = window.speechSynthesis;
+    if (!synthesis) {
+      setAudioSupported(false);
+      setAvailableArabicVoices([]);
+      return undefined;
+    }
+
+    setAudioSupported(true);
+    setSelectedVoiceId(getSelectedVoiceId() || 'auto');
+    const refreshVoices = () => setAvailableArabicVoices(getArabicVoices());
+    refreshVoices();
+    synthesis.addEventListener('voiceschanged', refreshVoices);
+    return () => synthesis.removeEventListener('voiceschanged', refreshVoices);
+  }, [activeSection]);
 
   // ابدأ AudioFlow عند تحميل المكوّن
   useEffect(() => {
@@ -604,9 +633,11 @@ export default function Home() {
       await clearAllMessages();
       localStorage.removeItem(PROFILE_STORAGE_KEY);
       localStorage.removeItem(PRIVACY_STORAGE_KEY);
+      saveSelectedVoiceId(null);
       skipProfileSaveRef.current = true;
       setProfile({ ...DEFAULT_PROFILE });
       setPrivacyEnabled(true);
+      setSelectedVoiceId('auto');
       setDeleteConfirmationOpen(false);
       setPrivacyMessage('تم حذف بياناتك المحلية المحددة.');
     } catch (error) {
@@ -1184,6 +1215,108 @@ export default function Home() {
                           </li>
                         ))}
                       </ul>
+                    )}
+                  </div>
+                ) : activeSection === 'audio' ? (
+                  <div className="space-y-5">
+                    <div>
+                      <h2 className="text-base font-semibold text-text-primary">اختيار صوت المساعد</h2>
+                      <p className="mt-1 text-xs leading-5 text-text-secondary">
+                        اختر صوتًا عربيًا متاحًا على جهازك، ثم استمع إلى عينة قبل اعتماده.
+                      </p>
+                    </div>
+
+                    {!audioSupported ? (
+                      <p role="alert" className="rounded-lg border border-base-border bg-base-card p-3 text-sm leading-6 text-text-secondary">
+                        ميزة النطق غير مدعومة في هذا المتصفح.
+                      </p>
+                    ) : (
+                      <>
+                        <label className="block space-y-2">
+                          <span className="text-sm text-text-primary">صوت النطق</span>
+                          <select
+                            value={selectedVoiceId}
+                            onChange={(event) => {
+                              const voiceId = event.target.value;
+                              try {
+                                saveSelectedVoiceId(voiceId === 'auto' ? null : voiceId);
+                                setSelectedVoiceId(voiceId);
+                                setAudioSettingsMessage('تم حفظ اختيار الصوت على هذا الجهاز.');
+                              } catch (error) {
+                                console.error('[TTS] Could not save the selected voice:', error);
+                                setAudioSettingsMessage('تعذر حفظ اختيار الصوت على هذا الجهاز.');
+                              }
+                            }}
+                            className="h-11 w-full rounded-lg border border-base-border bg-base-card px-3 text-right text-sm text-text-primary focus:border-gold"
+                          >
+                            <option value="auto">تلقائي — صوت الجهاز</option>
+                            {selectedVoiceId !== 'auto' &&
+                              !availableArabicVoices.some((voice) => getVoiceId(voice) === selectedVoiceId) && (
+                                <option value={selectedVoiceId} disabled>
+                                  الصوت المحفوظ غير متاح — سيُستخدم الصوت التلقائي
+                                </option>
+                              )}
+                            {availableArabicVoices.map((voice) => (
+                              <option key={getVoiceId(voice)} value={getVoiceId(voice)}>
+                                {voice.name} ({voice.lang})
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const voices = getArabicVoices();
+                            setAvailableArabicVoices(voices);
+                            setAudioSettingsMessage(
+                              voices.length
+                                ? `تم العثور على ${voices.length} صوت عربي.`
+                                : 'لم يعثر الجهاز على أصوات عربية متاحة حاليًا.'
+                            );
+                          }}
+                          className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-card hover:text-text-primary"
+                        >
+                          تحديث قائمة الأصوات
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={audioPreviewing}
+                          onClick={async () => {
+                            setAudioPreviewing(true);
+                            setAudioSettingsMessage('');
+                            try {
+                              const played = await speak('مرحبًا، أنا مساعدك الشخصي. كيف أقدر أساعدك اليوم؟', {
+                                voiceId: selectedVoiceId === 'auto' ? null : selectedVoiceId,
+                                rate: 1.04,
+                                pitch: 1.06,
+                              });
+                              if (!played) setAudioSettingsMessage('تعذر تشغيل العينة. جرّب تحديث الأصوات أو اختيار صوت آخر.');
+                            } catch (error) {
+                              console.error('[TTS] Voice preview failed:', error);
+                              setAudioSettingsMessage('تعذر تشغيل عينة الصوت.');
+                            } finally {
+                              setAudioPreviewing(false);
+                            }
+                          }}
+                          className="min-h-10 rounded-lg border border-gold/50 bg-gold/10 px-4 text-sm text-gold hover:bg-gold/15 disabled:opacity-50"
+                        >
+                          {audioPreviewing ? 'جارٍ تشغيل العينة...' : 'استمع إلى عينة'}
+                        </button>
+
+                        {availableArabicVoices.length === 0 && (
+                          <p className="rounded-lg border border-base-border bg-base-card p-3 text-xs leading-5 text-text-secondary">
+                            لم تظهر أصوات عربية بعد. قد تختلف القائمة حسب الجهاز والمتصفح؛ على iPhone تحقق من تنزيل صوت عربي في إعدادات «المحتوى المنطوق»، ثم أعد فتح هذه القائمة.
+                          </p>
+                        )}
+                        <p className="text-xs leading-5 text-text-secondary">
+                          الأصوات هنا من جهازك ولا تستخدم Google. توفر الصوت العربي ونبرته يختلفان بين الأجهزة، وقد لا يوضح النظام إن كان الصوت نسائيًا.
+                        </p>
+                        {audioSettingsMessage && (
+                          <p role="status" className="text-xs text-text-secondary">{audioSettingsMessage}</p>
+                        )}
+                      </>
                     )}
                   </div>
                 ) : activeSection === 'privacy' ? (
