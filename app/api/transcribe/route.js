@@ -1,10 +1,10 @@
 ﻿export const runtime = 'edge';
 
 import { NextResponse } from 'next/server';
-import { customerAccessResponse, requireAccountActive } from '../../../lib/customer-access';
+import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
 
 export async function POST(req) {
-  const access = await requireAccountActive(req);
+  const access = await requireCustomerRegistered(req);
   if (!access.ok) return customerAccessResponse(access);
 
   try {
@@ -89,4 +89,3 @@ export async function POST(req) {
     );
   }
 }
-

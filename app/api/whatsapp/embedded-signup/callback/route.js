@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { customerAccessResponse, requireAccountActive } from '../../../../../lib/customer-access';
+import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
 import {
   verifySignedSignupState,
 } from '../../../../../lib/whatsapp-embedded-signup';
@@ -16,7 +16,7 @@ async function metaGet(path, accessToken) {
 }
 
 export async function POST(request) {
-  const access = await requireAccountActive(request);
+  const access = await requireCustomerRegistered(request);
   if (!access.ok) return customerAccessResponse(access);
   const user = access.user;
   const userSupabase = { client: access.client };

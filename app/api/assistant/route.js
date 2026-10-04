@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { customerAccessResponse, requireAccountActive } from '../../../lib/customer-access';
+import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
 
 export const runtime = 'edge';
 
@@ -27,7 +27,7 @@ function getErrorType(error) {
 }
 
 export async function POST(request) {
-  const access = await requireAccountActive(request);
+  const access = await requireCustomerRegistered(request);
   if (!access.ok) return customerAccessResponse(access);
 
   let body;
