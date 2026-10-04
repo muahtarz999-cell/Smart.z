@@ -97,7 +97,6 @@ export default function Home() {
   const [authReady, setAuthReady] = useState(false);
   const [customerAccess, setCustomerAccess] = useState({ status: 'checking', message: '' });
   const [authPanelOpen, setAuthPanelOpen] = useState(false);
-  const [authMode, setAuthMode] = useState('signin');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
@@ -452,25 +451,12 @@ export default function Home() {
     setAuthError('');
     setAuthNotice('');
     try {
-      if (authMode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({
-          email: authEmail.trim(),
-          password: authPassword,
-        });
-        if (error) throw error;
-        if (!data.session) {
-          setAuthNotice('تم إنشاء الحساب. تحقق من بريدك لتأكيده ثم سجّل الدخول.');
-        } else {
-          setAuthNotice('تم إنشاء الحساب وتسجيل الدخول.');
-        }
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: authEmail.trim(),
-          password: authPassword,
-        });
-        if (error) throw error;
-        setAuthNotice('تم تسجيل الدخول بنجاح.');
-      }
+      const { error } = await supabase.auth.signInWithPassword({
+        email: authEmail.trim(),
+        password: authPassword,
+      });
+      if (error) throw error;
+      setAuthNotice('تم تسجيل الدخول بنجاح.');
       setAuthPassword('');
     } catch (error) {
       setAuthError(error?.message || 'تعذر إكمال عملية المصادقة.');
@@ -845,24 +831,6 @@ export default function Home() {
 
                   {authPanelOpen && (
                     <form onSubmit={submitAuth} className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          aria-pressed={authMode === 'signin'}
-                          onClick={() => { setAuthMode('signin'); setAuthError(''); setAuthNotice(''); }}
-                          className={`min-h-9 rounded-md border text-xs ${authMode === 'signin' ? 'border-gold/50 bg-gold/10 text-gold' : 'border-base-border text-text-secondary'}`}
-                        >
-                          تسجيل الدخول
-                        </button>
-                        <button
-                          type="button"
-                          aria-pressed={authMode === 'signup'}
-                          onClick={() => { setAuthMode('signup'); setAuthError(''); setAuthNotice(''); }}
-                          className={`min-h-9 rounded-md border text-xs ${authMode === 'signup' ? 'border-gold/50 bg-gold/10 text-gold' : 'border-base-border text-text-secondary'}`}
-                        >
-                          إنشاء حساب
-                        </button>
-                      </div>
                       <label className="block space-y-1.5">
                         <span className="text-xs text-text-secondary">البريد الإلكتروني</span>
                         <input
@@ -881,7 +849,7 @@ export default function Home() {
                           type="password"
                           required
                           minLength={6}
-                          autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'}
+                          autoComplete="current-password"
                           value={authPassword}
                           onChange={(event) => setAuthPassword(event.target.value)}
                           className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-left text-sm text-text-primary"
@@ -893,8 +861,11 @@ export default function Home() {
                         disabled={authBusy}
                         className="min-h-10 w-full rounded-lg border border-gold/50 bg-gold/10 px-3 text-sm text-gold disabled:opacity-50"
                       >
-                        {authBusy ? 'جارٍ التنفيذ...' : authMode === 'signup' ? 'إنشاء حساب' : 'دخول'}
+                        {authBusy ? 'جارٍ تسجيل الدخول...' : 'دخول'}
                       </button>
+                      <p className="text-xs leading-5 text-text-secondary">
+                        حسابات العملاء ينشئها المدير؛ تواصل معه للحصول على بيانات الدخول.
+                      </p>
                       {authError && <p role="alert" className="text-xs leading-5 text-red-300">{authError}</p>}
                       {authNotice && <p role="status" className="text-xs leading-5 text-text-secondary">{authNotice}</p>}
                     </form>
