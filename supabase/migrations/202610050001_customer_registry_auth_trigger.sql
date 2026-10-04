@@ -36,6 +36,7 @@ alter table public.customer_registry enable row level security;
 revoke all on public.customer_registry from public, anon, authenticated;
 grant select on public.customer_registry to authenticated;
 
+drop policy if exists "Customers can read own registry record" on public.customer_registry;
 drop policy if exists customer_registry_select_own on public.customer_registry;
 create policy customer_registry_select_own
 on public.customer_registry
