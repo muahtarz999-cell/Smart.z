@@ -107,8 +107,10 @@ begin
     execute '
       insert into public.whatsapp_connection_secrets
         (connection_id, user_id, access_token, expires_at)
-      select connection_id, user_id, access_token, expires_at
-      from private.whatsapp_connection_secrets
+      select legacy.connection_id, connection.user_id, legacy.access_token, legacy.token_expires_at
+      from private.whatsapp_connection_secrets as legacy
+      join public.whatsapp_connections as connection
+        on connection.id = legacy.connection_id
       on conflict (connection_id) do nothing
     ';
   end if;
