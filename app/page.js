@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import AssistantOrb from '../components/AssistantOrb';
 import LocalDataPanel from '../components/LocalDataPanel';
+import WhatsAppClusterConnection from '../components/WhatsAppClusterConnection';
 import { AudioFlowManager } from '../lib/audio-flow';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import {
@@ -1021,43 +1022,10 @@ export default function Home() {
                       <p className="text-xs leading-5 text-text-secondary">
                         تُعالج الرسائل النصية الواردة عبر Meta ومزوّد المساعد Groq دون حفظ سجل محادثات في قاعدة بيانات Smart.z؛ تنطبق سياسات معالجة البيانات الخاصة بكل مزوّد.
                       </p>
-                      <div className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
-                        <div>
-                          <p className="text-sm font-medium text-text-primary">ربط WhatsApp Business</p>
-                          <p className="mt-1 text-xs leading-5 text-text-secondary">
-                            أكمل التفويض واختيار الرقم داخل نافذة Meta الرسمية. لا نستخدم صور QR أو بيانات جلسات WhatsApp Web.
-                          </p>
-                        </div>
-                        <p role="status" aria-live="polite" className="text-xs text-text-secondary">
-                          {whatsappConnectionLoading
-                            ? 'جارٍ التحقق من حالة الربط...'
-                            : whatsappMetaConnection
-                              ? `مرتبط${whatsappMetaConnection.displayPhoneNumber ? ` · ${whatsappMetaConnection.displayPhoneNumber}` : ''}`
-                              : whatsappBusy && whatsappPhase === 'starting'
-                                ? 'جارٍ بدء الربط الرسمي...'
-                                : whatsappBusy && whatsappPhase === 'awaiting-meta'
-                                  ? 'أكمل التفويض واختيار الرقم في نافذة Meta.'
-                                  : whatsappBusy && whatsappPhase === 'saving'
-                                    ? 'تم التحقق من الرقم؛ جارٍ حفظ الربط بأمان...'
-                                    : 'غير مرتبط'}
-                        </p>
-                        <button
-                          type="button"
-                          disabled={whatsappBusy || whatsappConnectionLoading || !authUser || customerAccess.status !== 'active'}
-                          onClick={startOfficialWhatsAppSignup}
-                          className="min-h-10 w-full rounded-lg border border-gold/40 px-3 text-sm text-gold hover:bg-gold/10 disabled:border-base-border disabled:text-text-secondary disabled:opacity-70"
-                        >
-                          {whatsappBusy
-                            ? whatsappPhase === 'awaiting-meta'
-                              ? 'بانتظار إكمال التفويض لدى Meta...'
-                              : whatsappPhase === 'saving'
-                                ? 'جارٍ تفعيل الرقم...'
-                                : 'جارٍ بدء الربط...'
-                            : whatsappMetaConnection
-                              ? 'استبدال الرقم عبر Meta'
-                              : 'متابعة الربط الرسمي'}
-                        </button>
-                      </div>
+                      <WhatsAppClusterConnection
+                        authSession={authSession}
+                        customerAccess={customerAccess}
+                      />
                       {whatsappError && (
                         <p role="alert" className="rounded-lg border border-gold/20 bg-gold/5 px-3 py-2 text-xs leading-5 text-text-secondary">
                           {whatsappError}
