@@ -2,9 +2,16 @@
 
 import { useEffect, useRef, useState } from 'react';
 import AssistantOrb from '../components/AssistantOrb';
+import LocalDataPanel from '../components/LocalDataPanel';
 import { AudioFlowManager } from '../lib/audio-flow';
-import { clearAllMessages } from '../lib/conversation';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import {
+  clearAllLocalData,
+  deleteLocalRecord,
+  listLocalRecords,
+  migrateLegacyMemories,
+  saveLocalRecord,
+} from '../lib/local-data';
 import {
   getArabicVoices,
   getSelectedVoiceId,
@@ -21,6 +28,8 @@ import {
 const MENU_SECTIONS = [
   { id: 'profile', label: 'ملفي' },
   { id: 'learning', label: 'التعلم والتخصيص' },
+  { id: 'notes', label: 'ملاحظاتي' },
+  { id: 'tasks', label: 'مهامي' },
   { id: 'audio', label: 'الصوت' },
   { id: 'apps', label: 'ربط التطبيقات' },
   { id: 'privacy', label: 'الخصوصية والبيانات' },
@@ -94,6 +103,8 @@ export default function Home() {
   const [privacyLoaded, setPrivacyLoaded] = useState(false);
   const [savedMemories, setSavedMemories] = useState([]);
   const [memoriesLoaded, setMemoriesLoaded] = useState(false);
+  const [memoryDraft, setMemoryDraft] = useState('');
+  const [memoryError, setMemoryError] = useState('');
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [privacyMessage, setPrivacyMessage] = useState('');
   const [authUser, setAuthUser] = useState(null);
@@ -337,31 +348,22 @@ export default function Home() {
 
   useEffect(() => {
     if (!customerDataReady) return undefined;
-    try {
-      const storedMemories = localStorage.getItem(MEMORY_STORAGE_KEY);
-      if (storedMemories) {
-        const parsedMemories = JSON.parse(storedMemories);
-        if (Array.isArray(parsedMemories)) {
-          setSavedMemories(
-            parsedMemories
-              .map((entry, index) => {
-                if (typeof entry === 'string') {
-                  return { id: `memory-${index}`, text: entry };
-                }
-                if (entry && typeof entry.text === 'string') {
-                  return { id: String(entry.id ?? `memory-${index}`), text: entry.text };
-                }
-                return null;
-              })
-              .filter(Boolean)
-          );
-        }
-      }
-    } catch (error) {
-      console.warn('[Learning] Could not load saved memories:', error);
-    } finally {
-      setMemoriesLoaded(true);
-    }
+    let active = true;
+    migrateLegacyMemories(MEMORY_STORAGE_KEY)
+      .then(() => listLocalRecords('memories'))
+      .then((memories) => {
+        if (active) setSavedMemories(memories);
+      })
+      .catch((error) => {
+        console.error('[Learning] Could not load saved memories:', error);
+        if (active) setMemoryError('تعذر تحميل الذكريات المحلية. لم يتم حذف البيانات القديمة.');
+      })
+      .finally(() => {
+        if (active) setMemoriesLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
   }, [customerDataReady]);
 
   useEffect(() => {
@@ -616,13 +618,17 @@ export default function Home() {
   async function deleteLocalUserData() {
     setPrivacyMessage('');
     try {
-      await clearAllMessages();
+      await clearAllLocalData();
       localStorage.removeItem(PROFILE_STORAGE_KEY);
       localStorage.removeItem(PRIVACY_STORAGE_KEY);
+      localStorage.removeItem(MEMORY_STORAGE_KEY);
       saveSelectedVoiceId(null);
       skipProfileSaveRef.current = true;
       setProfile({ ...DEFAULT_PROFILE });
       setPrivacyEnabled(true);
+      setSavedMemories([]);
+      setMemoryDraft('');
+      setMemoryError('');
       setSelectedVoiceId('auto');
       setDeleteConfirmationOpen(false);
       setPrivacyMessage('تم حذف بياناتك المحلية المحددة.');
@@ -632,18 +638,29 @@ export default function Home() {
     }
   }
 
-  function deleteSavedMemory(memoryId) {
-    const remainingMemories = savedMemories.filter((memory) => memory.id !== memoryId);
-    setSavedMemories(remainingMemories);
+  async function saveMemory(event) {
+    event.preventDefault();
+    const text = memoryDraft.trim();
+    if (!text) return;
+    setMemoryError('');
     try {
-      if (remainingMemories.length) {
-        localStorage.setItem(MEMORY_STORAGE_KEY, JSON.stringify(remainingMemories));
-      } else {
-        localStorage.removeItem(MEMORY_STORAGE_KEY);
-      }
+      const memory = await saveLocalRecord('memories', { text });
+      setSavedMemories((current) => [memory, ...current]);
+      setMemoryDraft('');
+    } catch (error) {
+      console.error('[Learning] Could not save memory:', error);
+      setMemoryError('تعذر حفظ الذاكرة على هذا الجهاز.');
+    }
+  }
+
+  async function deleteSavedMemory(memoryId) {
+    setMemoryError('');
+    try {
+      await deleteLocalRecord('memories', memoryId);
+      setSavedMemories((current) => current.filter((memory) => memory.id !== memoryId));
     } catch (error) {
       console.error('[Learning] Could not delete saved memory:', error);
-      setSavedMemories(savedMemories);
+      setMemoryError('تعذر حذف الذاكرة من هذا الجهاز.');
     }
   }
 
@@ -1098,9 +1115,30 @@ export default function Home() {
                   <div className="space-y-5">
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">التعلم والتخصيص</h2>
-                      <p className="mt-1 text-xs text-text-secondary">الذاكرة المحفوظة على هذا الجهاز.</p>
+                      <p className="mt-1 text-xs text-text-secondary">الذاكرة المحفوظة على هذا الجهاز فقط؛ لا تتم مزامنتها مع الخادم.</p>
                     </div>
 
+                    <form onSubmit={saveMemory} className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
+                      <label className="block space-y-2">
+                        <span className="text-sm text-text-primary">إضافة ذاكرة</span>
+                        <textarea
+                          value={memoryDraft}
+                          onChange={(event) => setMemoryDraft(event.target.value)}
+                          maxLength={2000}
+                          rows={3}
+                          className="w-full rounded-lg border border-base-border bg-base-panel px-3 py-2 text-sm text-text-primary outline-none focus:border-gold/60"
+                        />
+                      </label>
+                      <button
+                        type="submit"
+                        disabled={!memoriesLoaded || !memoryDraft.trim()}
+                        className="min-h-10 rounded-lg border border-gold/40 px-4 text-sm text-gold hover:bg-gold/10 disabled:opacity-50"
+                      >
+                        حفظ على هذا الجهاز
+                      </button>
+                    </form>
+
+                    {memoryError && <p role="alert" className="text-sm text-red-300">{memoryError}</p>}
                     {!memoriesLoaded ? (
                       <p className="text-sm text-text-secondary">جارٍ تحميل الذاكرة...</p>
                     ) : savedMemories.length === 0 ? (
@@ -1133,6 +1171,10 @@ export default function Home() {
                       </ul>
                     )}
                   </div>
+                ) : activeSection === 'notes' ? (
+                  <LocalDataPanel collection="notes" />
+                ) : activeSection === 'tasks' ? (
+                  <LocalDataPanel collection="tasks" />
                 ) : activeSection === 'audio' ? (
                   <div className="space-y-5">
                     <div>
