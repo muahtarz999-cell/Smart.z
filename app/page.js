@@ -13,6 +13,10 @@ import {
   speak,
 } from '../lib/tts';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
+import {
+  clearWhatsAppSignupState,
+  setWhatsAppSignupPhase,
+} from '../lib/whatsapp-signup-state';
 
 const MENU_SECTIONS = [
   { id: 'profile', label: 'ملفي' },
@@ -103,6 +107,8 @@ export default function Home() {
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
   const [whatsappBusy, setWhatsappBusy] = useState(false);
+  const [whatsappPhase, setWhatsappPhase] = useState('idle');
+  const [whatsappConnectionLoading, setWhatsappConnectionLoading] = useState(false);
   const [whatsappError, setWhatsappError] = useState('');
   const [whatsappMetaConnection, setWhatsappMetaConnection] = useState(null);
   const [message, setMessage] = useState('');
@@ -166,6 +172,7 @@ export default function Home() {
     setWhatsappError('');
 
     if (!authUser || !authSession?.access_token) {
+      setWhatsappConnectionLoading(false);
       setCustomerAccess({ status: 'unauthenticated', message: 'سجّل الدخول للمتابعة.' });
       return () => { active = false; };
     }
@@ -213,9 +220,13 @@ export default function Home() {
   }, [authReady, authUser?.id, authSession?.access_token]);
 
   useEffect(() => {
-    if (customerAccess.status !== 'active' || !authSession?.access_token) return undefined;
+    if (customerAccess.status !== 'active' || !authSession?.access_token) {
+      setWhatsappConnectionLoading(false);
+      return undefined;
+    }
     let active = true;
     setWhatsappMetaConnection(null);
+    setWhatsappConnectionLoading(true);
 
     fetch('/api/whatsapp/connection', {
       headers: { Authorization: `Bearer ${authSession.access_token}` },
@@ -224,10 +235,16 @@ export default function Home() {
       .then(async (response) => {
         const result = await response.json();
         if (!response.ok) throw new Error(result.message || 'تعذر جلب حالة ربط WhatsApp.');
-        if (active) setWhatsappMetaConnection(result.connection || null);
+        if (active) {
+          setWhatsappMetaConnection(result.connection || null);
+          setWhatsappError('');
+        }
       })
       .catch((error) => {
         if (active) setWhatsappError(error?.message || 'تعذر جلب حالة ربط WhatsApp.');
+      })
+      .finally(() => {
+        if (active) setWhatsappConnectionLoading(false);
       });
 
     return () => { active = false; };
@@ -498,9 +515,14 @@ export default function Home() {
       setWhatsappError('سجّل الدخول إلى Smart.z قبل ربط WhatsApp.');
       return;
     }
+    if (whatsappMetaConnection && !window.confirm('سيتم استبدال رقم WhatsApp الحالي بعد نجاح التحقق من الرقم الجديد لدى Meta. هل تريد المتابعة؟')) {
+      return;
+    }
 
     setWhatsappBusy(true);
     setWhatsappError('');
+    setWhatsAppSignupPhase('starting');
+    setWhatsappPhase('starting');
     try {
       const startResponse = await fetch('/api/whatsapp/embedded-signup/start', {
         method: 'POST',
@@ -516,6 +538,8 @@ export default function Home() {
         throw new Error(config.message || 'تعذر بدء الربط الرسمي حاليًا.');
       }
 
+      setWhatsAppSignupPhase('awaiting-meta');
+      setWhatsappPhase('awaiting-meta');
       const facebook = await loadMetaSdk(config.appId);
       const result = await new Promise((resolve, reject) => {
         let authCode = null;
@@ -567,6 +591,8 @@ export default function Home() {
         });
       });
 
+      setWhatsAppSignupPhase('saving');
+      setWhatsappPhase('saving');
       const callbackResponse = await fetch('/api/whatsapp/embedded-signup/callback', {
         method: 'POST',
         headers: {
@@ -581,6 +607,8 @@ export default function Home() {
     } catch (error) {
       setWhatsappError(error?.message || 'تعذر بدء الربط الرسمي حاليًا.');
     } finally {
+      clearWhatsAppSignupState();
+      setWhatsappPhase('idle');
       setWhatsappBusy(false);
     }
   }
@@ -976,21 +1004,43 @@ export default function Home() {
                       <p className="text-xs leading-5 text-text-secondary">
                         تُعالج الرسائل النصية الواردة عبر Meta ومزوّد المساعد Groq دون حفظ سجل محادثات في قاعدة بيانات Smart.z؛ تنطبق سياسات معالجة البيانات الخاصة بكل مزوّد.
                       </p>
-                      {!whatsappMetaConnection && (
-                        <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">
-                          <p className="text-xs leading-5 text-text-secondary">
-                            اختر رقم WhatsApp Business وأكمل التحقق والتفويض داخل نافذة Meta الرسمية.
+                      <div className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
+                        <div>
+                          <p className="text-sm font-medium text-text-primary">ربط WhatsApp Business</p>
+                          <p className="mt-1 text-xs leading-5 text-text-secondary">
+                            أكمل التفويض واختيار الرقم داخل نافذة Meta الرسمية. لا نستخدم صور QR أو بيانات جلسات WhatsApp Web.
                           </p>
-                          <button
-                            type="button"
-                            disabled={whatsappBusy || !authUser}
-                            onClick={startOfficialWhatsAppSignup}
-                            className="min-h-10 w-full rounded-lg border border-gold/40 px-3 text-sm text-gold hover:bg-gold/10 disabled:border-base-border disabled:text-text-secondary disabled:opacity-70"
-                          >
-                            {whatsappBusy ? 'جارٍ بدء الربط...' : 'متابعة الربط الرسمي'}
-                          </button>
                         </div>
-                      )}
+                        <p role="status" aria-live="polite" className="text-xs text-text-secondary">
+                          {whatsappConnectionLoading
+                            ? 'جارٍ التحقق من حالة الربط...'
+                            : whatsappMetaConnection
+                              ? `مرتبط${whatsappMetaConnection.displayPhoneNumber ? ` · ${whatsappMetaConnection.displayPhoneNumber}` : ''}`
+                              : whatsappBusy && whatsappPhase === 'starting'
+                                ? 'جارٍ بدء الربط الرسمي...'
+                                : whatsappBusy && whatsappPhase === 'awaiting-meta'
+                                  ? 'أكمل التفويض واختيار الرقم في نافذة Meta.'
+                                  : whatsappBusy && whatsappPhase === 'saving'
+                                    ? 'تم التحقق من الرقم؛ جارٍ حفظ الربط بأمان...'
+                                    : 'غير مرتبط'}
+                        </p>
+                        <button
+                          type="button"
+                          disabled={whatsappBusy || whatsappConnectionLoading || !authUser || customerAccess.status !== 'active'}
+                          onClick={startOfficialWhatsAppSignup}
+                          className="min-h-10 w-full rounded-lg border border-gold/40 px-3 text-sm text-gold hover:bg-gold/10 disabled:border-base-border disabled:text-text-secondary disabled:opacity-70"
+                        >
+                          {whatsappBusy
+                            ? whatsappPhase === 'awaiting-meta'
+                              ? 'بانتظار إكمال التفويض لدى Meta...'
+                              : whatsappPhase === 'saving'
+                                ? 'جارٍ تفعيل الرقم...'
+                                : 'جارٍ بدء الربط...'
+                            : whatsappMetaConnection
+                              ? 'استبدال الرقم عبر Meta'
+                              : 'متابعة الربط الرسمي'}
+                        </button>
+                      </div>
                       {whatsappError && (
                         <p role="alert" className="rounded-lg border border-gold/20 bg-gold/5 px-3 py-2 text-xs leading-5 text-text-secondary">
                           {whatsappError}

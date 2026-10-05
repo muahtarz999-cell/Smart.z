@@ -27,7 +27,6 @@ export async function POST(request) {
   const access = await requireCustomerRegistered(request);
   if (!access.ok) return customerAccessResponse(access);
   const user = access.user;
-  const userSupabase = { client: access.client };
 
   const appId = process.env.META_APP_ID;
   const appSecret = process.env.META_APP_SECRET;
@@ -78,44 +77,48 @@ export async function POST(request) {
     const phone = phoneNumbers.data?.find((item) => String(item.id) === phoneNumberId);
     if (!phone) throw new Error('PHONE_NUMBER_VALIDATION_FAILED');
 
-    const { data: connection, error: connectionError } = await userSupabase.client
-      .from('whatsapp_connections')
-      .insert({
-        user_id: user.id,
-        waba_id: wabaId,
-        phone_number_id: phoneNumberId,
-        display_phone_number: phone.display_phone_number ?? null,
-        verified_name: phone.verified_name ?? null,
-        status: 'connected',
-      })
-      .select('id')
-      .single();
-    if (connectionError || !connection?.id) throw new Error('CONNECTION_STORAGE_FAILED');
-
-    const { error: secretError } = await userSupabase.client
-      .from('whatsapp_connection_secrets')
-      .insert({
-        user_id: user.id,
-        connection_id: connection.id,
-        access_token: accessToken,
-        expires_at: tokenResult.expires_in
-          ? new Date(Date.now() + Number(tokenResult.expires_in) * 1000).toISOString()
-          : null,
+    const expiresAt = tokenResult.expires_in
+      ? new Date(Date.now() + Number(tokenResult.expires_in) * 1000).toISOString()
+      : null;
+    const { data: connections, error: activationError } = await access.client.rpc(
+      'activate_whatsapp_connection',
+      {
+        p_waba_id: wabaId,
+        p_phone_number_id: phoneNumberId,
+        p_display_phone_number: phone.display_phone_number ?? null,
+        p_verified_name: phone.verified_name ?? null,
+        p_access_token: accessToken,
+        p_expires_at: expiresAt,
+      }
+    );
+    const connection = connections?.[0];
+    if (activationError || !connection?.connection_id) {
+      console.error('[WhatsApp signup] Atomic activation failed', {
+        code: activationError?.code ?? 'CONNECTION_STORAGE_FAILED',
       });
-    if (secretError) {
-      await userSupabase.client.from('whatsapp_connections').delete().eq('id', connection.id).eq('user_id', user.id);
-      throw new Error('SECRET_STORAGE_FAILED');
+      throw new Error('CONNECTION_STORAGE_FAILED');
     }
 
     return NextResponse.json({
       status: 'connected',
       connection: {
-        id: connection.id,
-        displayPhoneNumber: phone.display_phone_number ?? null,
-        verifiedName: phone.verified_name ?? null,
+        id: connection.connection_id,
+        displayPhoneNumber: connection.display_phone_number,
+        verifiedName: connection.verified_name,
       },
     });
-  } catch {
+  } catch (error) {
+    if (error?.message !== 'CONNECTION_STORAGE_FAILED') {
+      const knownErrorCodes = new Set([
+        'META_API_CONFIGURATION',
+        'META_VALIDATION_FAILED',
+        'WABA_VALIDATION_FAILED',
+        'PHONE_NUMBER_VALIDATION_FAILED',
+      ]);
+      console.error('[WhatsApp signup] Callback processing failed', {
+        code: knownErrorCodes.has(error?.message) ? error.message : 'UNEXPECTED',
+      });
+    }
     return NextResponse.json({ error: true, message: 'تعذر إكمال ربط WhatsApp. تحقق من إعدادات Meta وصلاحيات التخزين.' }, { status: 502 });
   }
 }
