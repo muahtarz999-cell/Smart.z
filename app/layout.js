@@ -1,14 +1,24 @@
 import './globals.css';
 import AppReadinessCheck from '../components/AppReadinessCheck';
+import InstallPrompt from '../components/InstallPrompt';
 
 export const metadata = {
-  title: 'المساعد الشخصي',
-  description: 'مساعد أعمال ذكي شخصي',
+  title: 'Smart.z - المساعد الشخصي الذكي',
+  description: 'Smart.z AI Voice Assistant',
   manifest: '/manifest.json',
+  icons: {
+    icon: [
+      { url: '/icon-192x192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512x512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: [
+      { url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' },
+    ],
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'المساعد',
+    title: 'Smart.z',
   },
 };
 
@@ -25,8 +35,8 @@ export default function RootLayout({ children }) {
       <body>
         {children}
         <AppReadinessCheck />
+        <InstallPrompt />
       </body>
     </html>
   );
 }
-

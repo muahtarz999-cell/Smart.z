@@ -1,46 +1,58 @@
-// Service Worker — تخزين نموذج Vosk والسكربتات للعمل offline بعد أول تنزيل
-const CACHE_NAME = 'smart-assistant-v1';
-const PRECACHE_URLS = [
+const CACHE_NAME = 'smartz-v2';
+const ASSETS_TO_CACHE = [
   '/',
   '/manifest.json',
-  'https://cdn.jsdelivr.net/npm/vosk@0.0.8/dist/vosk.js',
-  'https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js',
+  '/icon-192x192.png',
+  '/icon-512x512.png',
+  '/apple-touch-icon.png',
 ];
 
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS))
+self.addEventListener('install', (e) => {
+  e.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      console.log('[Service Worker] Caching App Shell Assets');
+      return cache.addAll(ASSETS_TO_CACHE);
+    })
   );
   self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
-      )
-    )
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((cache) => {
+          if (cache !== CACHE_NAME) {
+            console.log('[Service Worker] Clearing Old Cache:', cache);
+            return caches.delete(cache);
+          }
+        })
+      );
+    })
   );
   self.clients.claim();
 });
 
-// استراتيجية: stale-while-revalidate لكل الطلبات
-self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') return;
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const fetchPromise = fetch(event.request)
-        .then((response) => {
-          // خزّن الردود الصالحة (نفس الأصل أو CDN)
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || fetchPromise;
+self.addEventListener('fetch', (e) => {
+  // Do not cache API routes
+  if (e.request.url.includes('/api/')) {
+    return;
+  }
+
+  e.respondWith(
+    caches.match(e.request).then((cachedResponse) => {
+      if (cachedResponse) {
+        // Return cached asset and update cache in background (Stale-While-Revalidate)
+        fetch(e.request)
+          .then((networkResponse) => {
+            if (networkResponse && networkResponse.status === 200 && e.request.method === 'GET') {
+              caches.open(CACHE_NAME).then((cache) => cache.put(e.request, networkResponse));
+            }
+          })
+          .catch(() => {});
+        return cachedResponse;
+      }
+      return fetch(e.request);
     })
   );
 });
