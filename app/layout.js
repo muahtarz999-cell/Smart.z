@@ -1,4 +1,5 @@
 import './globals.css';
+import AppReadinessCheck from '../components/AppReadinessCheck';
 
 export const metadata = {
   title: 'المساعد الشخصي',
@@ -21,7 +22,11 @@ export const viewport = {
 export default function RootLayout({ children }) {
   return (
     <html lang="ar" dir="rtl">
-      <body>{children}</body>
+      <body>
+        {children}
+        <AppReadinessCheck />
+      </body>
     </html>
   );
 }
+
