@@ -12,6 +12,7 @@ import {
   saveSelectedVoiceId,
   speak,
 } from '../lib/tts';
+import { prepareCustomerLocalData } from '../lib/customer-local-data';
 
 const MENU_SECTIONS = [
   { id: 'profile', label: 'ملفي' },
@@ -120,9 +121,11 @@ export default function Home() {
   const [audioSupported, setAudioSupported] = useState(true);
   const [orbState, setOrbState] = useState('idle');
   const audioFlowRef = useRef(null);
+  const [customerDataUserId, setCustomerDataUserId] = useState(null);
   const skipProfileSaveRef = useRef(false);
   const profileEditPendingRef = useRef(false);
 
+  const customerDataReady = Boolean(authUser?.id && customerDataUserId === authUser.id);
   const orbSize = expanded ? 190 : 128;
   const panelMaxWidth = expanded ? 420 : 340;
 
@@ -172,28 +175,49 @@ export default function Home() {
     }
 
     setCustomerAccess({ status: 'checking', message: 'جارٍ التحقق من أهلية الحساب...' });
-    fetch('/api/auth/access', {
-      headers: { Authorization: `Bearer ${authSession.access_token}` },
-      cache: 'no-store',
-    }).then(async (response) => {
-      const result = await response.json();
-      if (!active) return;
-      if (response.ok && result.active === true && result.user?.id === authUser.id) {
-        setCustomerAccess({ status: 'active', message: '' });
-      } else {
-        setCustomerAccess({
-          status: 'denied',
-          message: result.message || 'الحساب بانتظار التفعيل.',
-        });
+    const verifyAccess = async () => {
+      const headers = {
+        Authorization: `Bearer ${authSession.access_token}`,
+      };
+      try {
+        const response = await fetch('/api/auth/access', { headers, cache: 'no-store' });
+        const result = await response.json();
+        if (!active) return;
+        if (response.ok && result.active === true && result.user?.id === authUser.id) {
+          const customerDataChanged = await prepareCustomerLocalData(authUser.id);
+          if (!active) return;
+          if (customerDataChanged) {
+            setProfile({ ...DEFAULT_PROFILE });
+            setProfileLoaded(false);
+            setPrivacyEnabled(true);
+            setPrivacyLoaded(false);
+            setLocationSharing(false);
+            setLocationSharingLoaded(false);
+            setSavedMemories([]);
+            setMemoriesLoaded(false);
+            setSelectedVoiceId('auto');
+          }
+          setCustomerDataUserId(authUser.id);
+          setCustomerAccess({ status: 'active', message: '' });
+        } else {
+          setCustomerAccess({
+            status: 'denied',
+            message: result.message || 'تعذر التحقق من أهلية الحساب.',
+          });
+        }
+      } catch (error) {
+        console.error('[Customer access] Access verification failed:', error);
+        if (active) setCustomerAccess({ status: 'error', message: 'تعذر التحقق من أهلية الحساب أو تجهيز بياناته المحلية.' });
       }
-    }).catch(() => {
-      if (active) setCustomerAccess({ status: 'error', message: 'تعذر التحقق من أهلية الحساب.' });
-    });
+    };
+
+    verifyAccess();
 
     return () => { active = false; };
   }, [authReady, authUser?.id, authSession?.access_token]);
 
   useEffect(() => {
+    if (!customerDataReady) return undefined;
     try {
       const savedProfile = localStorage.getItem(PROFILE_STORAGE_KEY);
       if (savedProfile) {
@@ -213,10 +237,10 @@ export default function Home() {
     } finally {
       setProfileLoaded(true);
     }
-  }, []);
+  }, [customerDataReady]);
 
   useEffect(() => {
-    if (!profileLoaded) return;
+    if (!customerDataReady || !profileLoaded) return;
     if (skipProfileSaveRef.current) {
       skipProfileSaveRef.current = false;
       return;
@@ -234,9 +258,10 @@ export default function Home() {
         setProfileSaveNotice('تعذر حفظ الإعدادات على هذا الجهاز.');
       }
     }
-  }, [profile, profileLoaded]);
+  }, [customerDataReady, profile, profileLoaded]);
 
   useEffect(() => {
+    if (!customerDataReady) return undefined;
     try {
       const savedPrivacy = localStorage.getItem(PRIVACY_STORAGE_KEY);
       if (savedPrivacy === 'false') setPrivacyEnabled(false);
@@ -245,18 +270,19 @@ export default function Home() {
     } finally {
       setPrivacyLoaded(true);
     }
-  }, []);
+  }, [customerDataReady]);
 
   useEffect(() => {
-    if (!privacyLoaded) return;
+    if (!customerDataReady || !privacyLoaded) return;
     try {
       localStorage.setItem(PRIVACY_STORAGE_KEY, String(privacyEnabled));
     } catch (error) {
       console.warn('[Privacy] Could not save setting locally:', error);
     }
-  }, [privacyEnabled, privacyLoaded]);
+  }, [customerDataReady, privacyEnabled, privacyLoaded]);
 
   useEffect(() => {
+    if (!customerDataReady) return undefined;
     try {
       setLocationSharing(localStorage.getItem(LOCATION_SHARING_STORAGE_KEY) === 'true');
     } catch (error) {
@@ -264,18 +290,19 @@ export default function Home() {
     } finally {
       setLocationSharingLoaded(true);
     }
-  }, []);
+  }, [customerDataReady]);
 
   useEffect(() => {
-    if (!locationSharingLoaded) return;
+    if (!customerDataReady || !locationSharingLoaded) return;
     try {
       localStorage.setItem(LOCATION_SHARING_STORAGE_KEY, String(locationSharing));
     } catch (error) {
       console.warn('[Location sharing] Could not save setting locally:', error);
     }
-  }, [locationSharing, locationSharingLoaded]);
+  }, [customerDataReady, locationSharing, locationSharingLoaded]);
 
   useEffect(() => {
+    if (!customerDataReady) return undefined;
     try {
       const storedMemories = localStorage.getItem(MEMORY_STORAGE_KEY);
       if (storedMemories) {
@@ -301,7 +328,7 @@ export default function Home() {
     } finally {
       setMemoriesLoaded(true);
     }
-  }, []);
+  }, [customerDataReady]);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -324,7 +351,9 @@ export default function Home() {
     const refreshQrStatus = async () => {
       try {
         const response = await fetch(`${WHATSAPP_QR_SERVICE_URL}/api/whatsapp/status`, {
-          headers: { Authorization: `Bearer ${authSession.access_token}` },
+          headers: {
+            Authorization: `Bearer ${authSession.access_token}`,
+          },
           cache: 'no-store',
         });
         const result = await response.json();
@@ -499,7 +528,9 @@ export default function Home() {
     try {
       const startResponse = await fetch('/api/whatsapp/embedded-signup/start', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${authSession.access_token}` },
+        headers: {
+          Authorization: `Bearer ${authSession.access_token}`,
+        },
       });
       const config = await startResponse.json();
       if (!startResponse.ok) {
@@ -594,7 +625,9 @@ export default function Home() {
     try {
       const response = await fetch(`${WHATSAPP_QR_SERVICE_URL}${path}`, {
         method,
-        headers: { Authorization: `Bearer ${authSession.access_token}` },
+        headers: {
+          Authorization: `Bearer ${authSession.access_token}`,
+        },
         cache: 'no-store',
       });
       const result = await response.json();

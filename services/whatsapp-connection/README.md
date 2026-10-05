@@ -20,11 +20,11 @@ Set `NEXT_PUBLIC_WHATSAPP_CONNECTION_SERVICE_URL` for the Smart.z frontend to th
 
 The service validates each Supabase access token with Supabase Auth before deriving `user_id`. Its service-role client is only used on this server, and every database operation is explicitly scoped to that verified user and connection. Baileys auth state is encrypted at rest with AES-256-GCM; keep the mounted volume and `SESSION_ENCRYPTION_KEY` durable and backed up together.
 
-The central Smart.z access gate requires a `public.customer_registry` row with `account_status = active` and `start_date <= today`. Auth signups are inserted as `pending`; activation must be performed by a trusted operator. `end_date` is recorded but intentionally not enforced yet.
+The service verifies the Supabase access token and requires a matching `public.customer_registry` row for the authenticated `user_id`. No browser-local installation identifier is required; each database operation remains scoped to the authenticated user's ID.
 
 ## Lifecycle API
 
-All routes require `Authorization: Bearer <Supabase access token>`:
+All routes require a Supabase access token in the Authorization header:
 
 - `GET /api/whatsapp/status`
 - `POST /api/whatsapp/session`
