@@ -34,7 +34,6 @@ const PROFILE_STORAGE_KEY = 'smart-assistant-profile';
 const PRIVACY_STORAGE_KEY = 'smart-assistant-privacy-enabled';
 const MEMORY_STORAGE_KEY = 'smart-assistant-memories';
 const LOCATION_SHARING_STORAGE_KEY = 'smart-assistant-location-sharing';
-const WHATSAPP_QR_SERVICE_URL = process.env.NEXT_PUBLIC_WHATSAPP_CONNECTION_SERVICE_URL;
 const DEFAULT_PROFILE = {
   name: '',
   responseStyle: 'medium',
@@ -106,11 +105,6 @@ export default function Home() {
   const [whatsappBusy, setWhatsappBusy] = useState(false);
   const [whatsappError, setWhatsappError] = useState('');
   const [whatsappMetaConnection, setWhatsappMetaConnection] = useState(null);
-  const [whatsappQrConnection, setWhatsappQrConnection] = useState(null);
-  const [whatsappPhoneNumber, setWhatsappPhoneNumber] = useState('');
-  const [whatsappQrStatus, setWhatsappQrStatus] = useState('disconnected');
-  const [whatsappQrDataUrl, setWhatsappQrDataUrl] = useState(null);
-  const [whatsappQrError, setWhatsappQrError] = useState('');
   const [message, setMessage] = useState('');
   const [reply, setReply] = useState('');
   const [loading, setLoading] = useState(false);
@@ -168,6 +162,8 @@ export default function Home() {
   useEffect(() => {
     if (!authReady) return undefined;
     let active = true;
+    setWhatsappMetaConnection(null);
+    setWhatsappError('');
 
     if (!authUser || !authSession?.access_token) {
       setCustomerAccess({ status: 'unauthenticated', message: 'سجّل الدخول للمتابعة.' });
@@ -215,6 +211,27 @@ export default function Home() {
 
     return () => { active = false; };
   }, [authReady, authUser?.id, authSession?.access_token]);
+
+  useEffect(() => {
+    if (customerAccess.status !== 'active' || !authSession?.access_token) return undefined;
+    let active = true;
+    setWhatsappMetaConnection(null);
+
+    fetch('/api/whatsapp/connection', {
+      headers: { Authorization: `Bearer ${authSession.access_token}` },
+      cache: 'no-store',
+    })
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || 'تعذر جلب حالة ربط WhatsApp.');
+        if (active) setWhatsappMetaConnection(result.connection || null);
+      })
+      .catch((error) => {
+        if (active) setWhatsappError(error?.message || 'تعذر جلب حالة ربط WhatsApp.');
+      });
+
+    return () => { active = false; };
+  }, [customerAccess.status, authSession?.access_token]);
 
   useEffect(() => {
     if (!customerDataReady) return undefined;
@@ -343,41 +360,6 @@ export default function Home() {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [menuOpen]);
-
-  useEffect(() => {
-    if (activeSection !== 'apps' || !authSession?.access_token || !WHATSAPP_QR_SERVICE_URL) return undefined;
-    let active = true;
-
-    const refreshQrStatus = async () => {
-      try {
-        const response = await fetch(`${WHATSAPP_QR_SERVICE_URL}/api/whatsapp/status`, {
-          headers: {
-            Authorization: `Bearer ${authSession.access_token}`,
-          },
-          cache: 'no-store',
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error('تعذر جلب حالة WhatsApp QR.');
-        if (!active) return;
-        setWhatsappQrStatus(result.status || 'disconnected');
-        setWhatsappQrDataUrl(result.qrDataUrl || null);
-        if (result.status === 'connected') {
-          setWhatsappQrConnection({ phoneNumber: result.phoneNumber });
-        } else {
-          setWhatsappQrConnection(null);
-        }
-      } catch (error) {
-        if (active) setWhatsappQrError(error?.message || 'تعذر الاتصال بخدمة WhatsApp.');
-      }
-    };
-
-    refreshQrStatus();
-    const timer = window.setInterval(refreshQrStatus, 4000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [activeSection, authSession?.access_token]);
 
   useEffect(() => {
     if (activeSection !== 'audio') return undefined;
@@ -517,12 +499,6 @@ export default function Home() {
       return;
     }
 
-    const normalizedPhoneNumber = whatsappPhoneNumber.replace(/[\s()-]/g, '');
-    if (!/^\+[1-9]\d{7,14}$/.test(normalizedPhoneNumber)) {
-      setWhatsappError('أدخل رقمًا بصيغة دولية، مثل ‎+14155552671.');
-      return;
-    }
-
     setWhatsappBusy(true);
     setWhatsappError('');
     try {
@@ -602,45 +578,8 @@ export default function Home() {
       const callbackResult = await callbackResponse.json();
       if (!callbackResponse.ok) throw new Error(callbackResult.message || 'تعذر إكمال ربط WhatsApp.');
       setWhatsappMetaConnection(callbackResult.connection);
-      setWhatsappPhoneNumber('');
     } catch (error) {
       setWhatsappError(error?.message || 'تعذر بدء الربط الرسمي حاليًا.');
-    } finally {
-      setWhatsappBusy(false);
-    }
-  }
-
-  async function callWhatsAppQrService(path, method = 'POST') {
-    if (!authSession?.access_token) {
-      setWhatsappQrError('سجّل الدخول إلى Smart.z أولًا.');
-      return;
-    }
-    if (!WHATSAPP_QR_SERVICE_URL) {
-      setWhatsappQrError('خدمة WhatsApp QR غير مُعدة بعد.');
-      return;
-    }
-
-    setWhatsappBusy(true);
-    setWhatsappQrError('');
-    try {
-      const response = await fetch(`${WHATSAPP_QR_SERVICE_URL}${path}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${authSession.access_token}`,
-        },
-        cache: 'no-store',
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error('تعذر تنفيذ طلب جلسة WhatsApp QR.');
-      setWhatsappQrStatus(result.status || 'disconnected');
-      setWhatsappQrDataUrl(result.qrDataUrl || null);
-      if (result.status === 'connected') {
-        setWhatsappQrConnection({ phoneNumber: result.phoneNumber });
-      } else {
-        setWhatsappQrConnection(null);
-      }
-    } catch (error) {
-      setWhatsappQrError(error?.message || 'تعذر الاتصال بخدمة WhatsApp QR.');
     } finally {
       setWhatsappBusy(false);
     }
@@ -1019,69 +958,6 @@ export default function Home() {
                               <span className="mt-1 block text-xs text-text-secondary">{whatsappBusy ? 'جارٍ الربط...' : 'غير مرتبط'}</span>
                             )}
                           </div>
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <button
-                              type="button"
-                              disabled={whatsappBusy || !authUser}
-                              onClick={() => callWhatsAppQrService('/api/whatsapp/session')}
-                              className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-panel disabled:opacity-60"
-                            >
-                              {whatsappQrStatus === 'needs_reauth' ? 'إعادة الربط عبر QR' : 'ربط عبر QR'}
-                            </button>
-                          </div>
-                        </li>
-                        <li className="rounded-lg border border-base-border bg-base-card p-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="text-xs text-text-secondary">
-                              حالة QR: {{
-                                connected: 'متصل',
-                                pending: 'بانتظار المسح',
-                                disconnected: 'غير متصل',
-                                reconnecting: 'جارٍ إعادة الاتصال',
-                                needs_reauth: 'يحتاج WhatsApp إلى إعادة الربط',
-                                error: 'حدث خطأ',
-                              }[whatsappQrStatus] || 'غير متصل'}
-                              {whatsappQrConnection?.phoneNumber ? ` · ${whatsappQrConnection.phoneNumber}` : ''}
-                            </span>
-                            {['connected', 'disconnected', 'reconnecting'].includes(whatsappQrStatus) && (
-                              <div className="flex gap-2">
-                                {whatsappQrStatus === 'connected' ? (
-                                  <button
-                                    type="button"
-                                    disabled={whatsappBusy}
-                                    onClick={() => callWhatsAppQrService('/api/whatsapp/disconnect')}
-                                    className="text-xs text-text-secondary hover:text-text-primary disabled:opacity-50"
-                                  >
-                                    فصل
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled={whatsappBusy || whatsappQrStatus === 'reconnecting'}
-                                    onClick={() => callWhatsAppQrService('/api/whatsapp/reconnect')}
-                                    className="text-xs text-gold disabled:opacity-50"
-                                  >
-                                    إعادة الاتصال
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                          {whatsappQrDataUrl && whatsappQrStatus === 'pending' && (
-                            <div className="mt-3 flex flex-col items-center gap-2">
-                              <img src={whatsappQrDataUrl} alt="رمز QR مؤقت لربط WhatsApp" className="h-56 w-56 rounded-lg bg-white p-2" />
-                              <p className="text-center text-xs text-text-secondary">امسح الرمز من تطبيق WhatsApp. الرمز مؤقت ويتجدد تلقائيًا.</p>
-                            </div>
-                          )}
-                          {whatsappQrStatus === 'needs_reauth' && (
-                            <p className="mt-2 text-xs text-text-secondary">يحتاج WhatsApp إلى إعادة الربط.</p>
-                          )}
-                          {!WHATSAPP_QR_SERVICE_URL && (
-                            <p className="mt-2 text-xs text-text-secondary">خدمة WhatsApp QR غير مُعدة بعد.</p>
-                          )}
-                          {whatsappQrError && (
-                            <p role="alert" className="mt-2 text-xs text-red-300">{whatsappQrError}</p>
-                          )}
                         </li>
                         {selectedApps.map((appId) => {
                           const app = SUPPORTED_APPS.find((supportedApp) => supportedApp.id === appId);
@@ -1097,27 +973,13 @@ export default function Home() {
                           );
                         })}
                       </ul>
+                      <p className="text-xs leading-5 text-text-secondary">
+                        تُعالج الرسائل النصية الواردة عبر Meta ومزوّد المساعد Groq دون حفظ سجل محادثات في قاعدة بيانات Smart.z؛ تنطبق سياسات معالجة البيانات الخاصة بكل مزوّد.
+                      </p>
                       {!whatsappMetaConnection && (
                         <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">
-                          <label htmlFor="whatsapp-business-phone" className="block text-xs text-text-secondary">
-                            رقم WhatsApp Business
-                          </label>
-                          <input
-                            id="whatsapp-business-phone"
-                            type="tel"
-                            inputMode="tel"
-                            autoComplete="tel"
-                            dir="ltr"
-                            value={whatsappPhoneNumber}
-                            onChange={(event) => {
-                              setWhatsappPhoneNumber(event.target.value);
-                              setWhatsappError('');
-                            }}
-                            placeholder="+14155552671"
-                            className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-left text-sm text-text-primary placeholder:text-text-secondary"
-                          />
                           <p className="text-xs leading-5 text-text-secondary">
-                            أدخل الرقم بالصيغة الدولية مع رمز الدولة. ستستخدم Meta الرقم كمرجع وتكمل التحقق والتفويض؛ الإدخال وحده لا يثبت الملكية.
+                            اختر رقم WhatsApp Business وأكمل التحقق والتفويض داخل نافذة Meta الرسمية.
                           </p>
                           <button
                             type="button"
@@ -1179,7 +1041,7 @@ export default function Home() {
                     <aside className="rounded-lg border border-gold/20 bg-gold/5 p-3 text-xs leading-5 text-text-secondary">
                       <p className="font-medium text-text-primary">قبل ربط أي تطبيق</p>
                       <p className="mt-1">قد يطلب التطبيق صلاحيات للوصول إلى بياناتك. راجع الصلاحيات والبيانات التي ستتم مشاركتها، واسأل عن استخدامها في الذاكرة قبل الموافقة.</p>
-                      <p className="mt-2 text-gold/80">هذه لوحة اختيار فقط؛ لا يبدأ الربط ولا تُرسل بيانات أو طلبات حاليًا.</p>
+                      <p className="mt-2 text-gold/80">لا يبدأ ربط WhatsApp إلا بعد موافقتك في نافذة Meta؛ التطبيقات الأخرى غير مرتبطة حاليًا.</p>
                     </aside>
                   </div>
                 ) : activeSection === 'learning' ? (

@@ -11,7 +11,8 @@ export async function POST(request) {
   const appId = process.env.META_APP_ID;
   const appSecret = process.env.META_APP_SECRET;
   const configId = process.env.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID;
-  if (!appId || !appSecret || !configId) {
+  const apiVersion = process.env.META_GRAPH_API_VERSION;
+  if (!appId || !appSecret || !configId || !/^v\d+\.\d+$/.test(apiVersion || '')) {
     return NextResponse.json({ error: true, code: 'META_SETUP_INCOMPLETE', message: 'إعداد Meta غير مكتمل.' }, { status: 503 });
   }
 

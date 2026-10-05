@@ -6,10 +6,18 @@ import {
 
 export const runtime = 'edge';
 
+function getMetaGraphApiVersion() {
+  const version = process.env.META_GRAPH_API_VERSION;
+  if (!/^v\d+\.\d+$/.test(version || '')) throw new Error('META_API_CONFIGURATION');
+  return version;
+}
+
 async function metaGet(path, accessToken) {
-  const url = new URL(`https://graph.facebook.com${path}`);
-  url.searchParams.set('access_token', accessToken);
-  const response = await fetch(url);
+  const url = new URL(`https://graph.facebook.com/${getMetaGraphApiVersion()}${path}`);
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: 'no-store',
+  });
   const result = await response.json().catch(() => null);
   if (!response.ok || !result) throw new Error('META_VALIDATION_FAILED');
   return result;
@@ -24,7 +32,8 @@ export async function POST(request) {
   const appId = process.env.META_APP_ID;
   const appSecret = process.env.META_APP_SECRET;
   const configId = process.env.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID;
-  if (!appId || !appSecret || !configId) {
+  const apiVersion = process.env.META_GRAPH_API_VERSION;
+  if (!appId || !appSecret || !configId || !/^v\d+\.\d+$/.test(apiVersion || '')) {
     return NextResponse.json({ error: true, code: 'META_SETUP_INCOMPLETE', message: 'إعداد Meta غير مكتمل.' }, { status: 503 });
   }
 
@@ -50,7 +59,7 @@ export async function POST(request) {
       return NextResponse.json({ error: true, message: 'تعذر التحقق من جلسة الربط.' }, { status: 403 });
     }
 
-    const exchangeUrl = new URL('https://graph.facebook.com/oauth/access_token');
+    const exchangeUrl = new URL(`https://graph.facebook.com/${apiVersion}/oauth/access_token`);
     exchangeUrl.searchParams.set('client_id', appId);
     exchangeUrl.searchParams.set('client_secret', appSecret);
     exchangeUrl.searchParams.set('code', code);
@@ -84,7 +93,6 @@ export async function POST(request) {
     if (connectionError || !connection?.id) throw new Error('CONNECTION_STORAGE_FAILED');
 
     const { error: secretError } = await userSupabase.client
-      .schema('private')
       .from('whatsapp_connection_secrets')
       .insert({
         user_id: user.id,
@@ -97,21 +105,6 @@ export async function POST(request) {
     if (secretError) {
       await userSupabase.client.from('whatsapp_connections').delete().eq('id', connection.id).eq('user_id', user.id);
       throw new Error('SECRET_STORAGE_FAILED');
-    }
-
-    const { error: eventError } = await userSupabase.client
-      .from('whatsapp_connection_events')
-      .insert({
-        user_id: user.id,
-        connection_id: connection.id,
-        event_type: 'connected',
-        metadata: { source: 'meta_embedded_signup', waba_id: wabaId, phone_number_id: phoneNumberId },
-      });
-    if (eventError) {
-      await userSupabase.client.schema('private').from('whatsapp_connection_secrets').delete()
-        .eq('connection_id', connection.id).eq('user_id', user.id);
-      await userSupabase.client.from('whatsapp_connections').delete().eq('id', connection.id).eq('user_id', user.id);
-      throw new Error('EVENT_STORAGE_FAILED');
     }
 
     return NextResponse.json({
