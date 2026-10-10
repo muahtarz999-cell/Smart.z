@@ -1,4 +1,4 @@
-const CACHE_NAME = 'smartz-v3';
+const CACHE_NAME = 'smartz-v4';
 const ASSETS_TO_CACHE = [
   '/',
   '/manifest.json',
@@ -36,6 +36,24 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   // Do not cache API routes
   if (e.request.url.includes('/api/')) {
+    return;
+  }
+
+  if (e.request.mode === 'navigate') {
+    e.respondWith(
+      fetch(e.request)
+        .then(async (networkResponse) => {
+          if (networkResponse.ok) {
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(e.request, networkResponse.clone());
+          }
+          return networkResponse;
+        })
+        .catch(async () => {
+          const cachedResponse = await caches.match(e.request);
+          return cachedResponse || Response.error();
+        })
+    );
     return;
   }
 

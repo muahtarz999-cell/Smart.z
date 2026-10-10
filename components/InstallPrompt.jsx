@@ -9,7 +9,19 @@ export default function InstallPrompt() {
 
   useEffect(() => {
     // تسجيل Service Worker
+    let wasControlled = false;
+    let isReloadingForUpdate = false;
+    const handleControllerChange = () => {
+      if (wasControlled && !isReloadingForUpdate) {
+        isReloadingForUpdate = true;
+        window.location.reload();
+      }
+      wasControlled = true;
+    };
+
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      wasControlled = Boolean(navigator.serviceWorker.controller);
+      navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
       navigator.serviceWorker.register('/sw.js').catch((err) => {
         console.warn('[PWA] Service Worker registration failed:', err);
       });
@@ -35,6 +47,9 @@ export default function InstallPrompt() {
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+      }
     };
   }, []);
 
