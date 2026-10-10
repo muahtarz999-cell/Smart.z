@@ -1215,7 +1215,7 @@ export default function Home() {
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">صوت المساعد</h2>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        يُنطق الرد باستخدام أفضل صوت عربي متاح محليًا على هذا الجهاز، دون إرسال نص الرد لخدمة صوت خارجية.
+                        يُستخدم أفضل صوت عربي محلي متاح، مع أولوية للسعودي ثم الخليجي، وتُستبعد أصوات ar-JO. لا يُرسل نص الرد إلى خدمة صوت خارجية.
                       </p>
                     </div>
 
