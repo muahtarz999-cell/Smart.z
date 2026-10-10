@@ -15,10 +15,12 @@
     "cap:ios": "cap open ios"
   },
   "dependencies": {
+    "@capacitor-community/text-to-speech": "^8.0.2",
     "@capacitor/android": "^8.5.3",
     "@capacitor/app-launcher": "^8.0.1",
     "@capacitor/core": "^8.5.3",
     "@capacitor/ios": "^8.5.3",
+    "@capacitor/local-notifications": "^8.3.1",
     "@supabase/supabase-js": "^2.45.0",
     "next": "^15.2.0",
     "react": "^18.3.1",

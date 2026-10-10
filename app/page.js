@@ -18,8 +18,18 @@ import {
   migrateLegacyMemories,
   saveLocalRecord,
 } from '../lib/local-data';
-import { getArabicVoiceInfo, speak } from '../lib/tts';
+import {
+  canOpenSpeechEngineSettings,
+  getArabicVoiceInfo,
+  isSpeechSupported,
+  openSpeechEngineSettings,
+  speak,
+} from '../lib/tts';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
+import {
+  getTaskReminderStatus,
+  synchronizeTaskReminders,
+} from '../lib/task-notifications';
 import {
   clearWhatsAppSignupState,
   setWhatsAppSignupPhase,
@@ -124,6 +134,7 @@ export default function Home() {
   const [audioVoiceError, setAudioVoiceError] = useState('');
   const [audioPlaybackError, setAudioPlaybackError] = useState('');
   const [audioStarting, setAudioStarting] = useState(false);
+  const [taskNotificationStatus, setTaskNotificationStatus] = useState(null);
   const [orbState, setOrbState] = useState('idle');
   const audioFlowRef = useRef(null);
   const [customerDataUserId, setCustomerDataUserId] = useState(null);
@@ -133,6 +144,52 @@ export default function Home() {
   const customerDataReady = Boolean(authUser?.id && customerDataUserId === authUser.id);
   const orbSize = expanded ? 190 : 128;
   const panelMaxWidth = expanded ? 420 : 340;
+
+  useEffect(() => {
+    let active = true;
+    let checking = false;
+
+    const refreshTaskNotifications = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const status = await getTaskReminderStatus();
+        if (active) setTaskNotificationStatus(status);
+        if (
+          customerDataReady
+          && status.supported
+          && status.permission === 'granted'
+          && status.channelEnabled
+        ) {
+          const tasks = await listLocalRecords('tasks');
+          await synchronizeTaskReminders(tasks);
+        }
+      } catch (error) {
+        console.error('[Notifications] Could not refresh local task reminders:', error);
+        if (active) {
+          setTaskNotificationStatus({
+            supported: true,
+            permission: 'error',
+            channelEnabled: false,
+            error: error?.message || 'تعذر فحص حالة الإشعارات.',
+          });
+        }
+      } finally {
+        checking = false;
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshTaskNotifications();
+    };
+
+    refreshTaskNotifications();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      active = false;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [customerDataReady]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
@@ -335,21 +392,31 @@ export default function Home() {
   useEffect(() => {
     if (activeSection !== 'audio') return undefined;
     let active = true;
-    setAudioSupported(
-      typeof window.speechSynthesis !== 'undefined'
-        && typeof window.SpeechSynthesisUtterance !== 'undefined'
-    );
-    setAudioVoiceInfo(null);
-    setAudioVoiceError('');
-    getArabicVoiceInfo()
-      .then((voiceInfo) => {
-        if (active) setAudioVoiceInfo(voiceInfo);
-      })
-      .catch((error) => {
-        console.error('[TTS] Could not find an Arabic voice:', error);
-        if (active) setAudioVoiceError(error?.message || 'تعذر العثور على صوت عربي في هذا الجهاز.');
-      });
-    return () => { active = false; };
+    const refreshVoices = () => {
+      setAudioSupported(isSpeechSupported());
+      setAudioVoiceInfo(null);
+      setAudioVoiceError('');
+      getArabicVoiceInfo()
+        .then((voiceInfo) => {
+          if (active) setAudioVoiceInfo(voiceInfo);
+        })
+        .catch((error) => {
+          console.error('[TTS] Could not find an Arabic voice:', error);
+          if (active) setAudioVoiceError(error?.message || 'تعذر العثور على صوت عربي في هذا الجهاز.');
+        });
+    };
+    const refreshOnResume = () => {
+      if (document.visibilityState === 'visible') refreshVoices();
+    };
+
+    refreshVoices();
+    document.addEventListener('visibilitychange', refreshOnResume);
+    window.speechSynthesis?.addEventListener?.('voiceschanged', refreshVoices);
+    return () => {
+      active = false;
+      document.removeEventListener('visibilitychange', refreshOnResume);
+      window.speechSynthesis?.removeEventListener?.('voiceschanged', refreshVoices);
+    };
   }, [activeSection]);
 
   // تهيئة تدفق الصوت وبدء الاستماع بعد تفاعل المستخدم
@@ -372,9 +439,10 @@ export default function Home() {
       onAudioError: (error) => {
         console.error('[Page] Audio error:', error);
         if (
+          error?.name === 'SpeechSynthesisError' ||
           error?.message?.startsWith('تعذر تشغيل الرد الصوتي') ||
           error?.message?.startsWith('تعذر نطق الرد') ||
-          error?.message?.startsWith('لم يعثر الجهاز على صوت عربي محلي') ||
+          error?.message?.startsWith('لم يعثر محرك النطق على صوت عربي') ||
           error?.message?.startsWith('النطق الصوتي غير مدعوم') ||
           error?.message?.startsWith('واجهة النطق الصوتي غير متاحة') ||
           error?.message?.startsWith('لم يسمح النظام بتشغيل النطق')
@@ -442,7 +510,20 @@ export default function Home() {
         body: JSON.stringify({ message: text }),
       });
       const data = await res.json();
-      setReply(data.reply || 'حدث خطأ، حاول مجددًا.');
+      const assistantReply = data.reply || 'حدث خطأ، حاول مجددًا.';
+      setReply(assistantReply);
+      setAudioPlaybackError('');
+      if (data.reply) {
+        const audioFlow = audioFlowRef.current;
+        const resumeListening = Boolean(audioFlow?.isVADRunning && audioFlow.vad?.isRunning);
+        if (resumeListening) audioFlow.vad.pause();
+        void speak(assistantReply).catch((error) => {
+          console.error('[TTS] Could not speak the text reply:', error);
+          setAudioPlaybackError(error?.message || 'تعذر تشغيل الرد صوتيًا؛ الرد النصي ما زال متاحًا.');
+        }).finally(() => {
+          if (resumeListening && audioFlow?.vad?.isRunning) audioFlow.vad.resume();
+        });
+      }
     } catch (err) {
       setReply('تعذر الاتصال بالمساعد الآن.');
     } finally {
@@ -1209,13 +1290,17 @@ export default function Home() {
                 ) : activeSection === 'notes' ? (
                   <LocalDataPanel collection="notes" />
                 ) : activeSection === 'tasks' ? (
-                  <LocalDataPanel collection="tasks" />
+                    <LocalDataPanel
+                      collection="tasks"
+                      notificationStatus={taskNotificationStatus}
+                      onNotificationStatusChange={setTaskNotificationStatus}
+                    />
                 ) : activeSection === 'audio' ? (
                   <div className="space-y-5">
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">صوت المساعد</h2>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        يُجرّب Smart.z النطق عبر محرك الجهاز أو المتصفح، مع أولوية للصوت السعودي ثم الخليجي، واستبعاد ar-JO. لا يرسل التطبيق النص إلى خدمة صوت خاصة به؛ يعتمد الاتصال على محرك النطق وإعداداته في الجهاز.
+                        يُجرّب Smart.z النطق عبر محرك الجهاز أو المتصفح، مع تفضيل الصوت المحلي ثم السعودي والخليجي، واستبعاد ar-JO. لا يرسل التطبيق النص إلى خدمة صوت خاصة به؛ يعتمد الاتصال على محرك النطق وإعداداته في الجهاز.
                       </p>
                     </div>
 
@@ -1227,8 +1312,12 @@ export default function Home() {
                       <>
                         {audioVoiceInfo ? (
                           <p className="text-xs leading-5 text-text-secondary">
-                            الصوت المختار تلقائيًا: {audioVoiceInfo.name} ({audioVoiceInfo.language})
-                            — {audioVoiceInfo.localService ? 'محلي على الجهاز' : 'مقدّم من محرك الجهاز أو المتصفح'}
+                            {audioVoiceInfo.native ? 'محرك Android' : 'محرك المتصفح'}: {audioVoiceInfo.name} ({audioVoiceInfo.language})
+                            — {audioVoiceInfo.localService === true
+                              ? 'صوت محلي'
+                              : audioVoiceInfo.localService === false
+                                ? 'الصوت يتطلب اتصالًا بالشبكة'
+                                : 'لم يحدد الجهاز مصدر الصوت'}
                           </p>
                         ) : audioVoiceError ? (
                           <p role="alert" className="text-xs leading-5 text-text-secondary">
@@ -1284,6 +1373,24 @@ export default function Home() {
                         </p>
                         {audioSettingsMessage && (
                           <p role="status" className="text-xs text-text-secondary">{audioSettingsMessage}</p>
+                        )}
+                        {audioVoiceError && canOpenSpeechEngineSettings() && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setAudioSettingsMessage('');
+                              try {
+                                await openSpeechEngineSettings();
+                                setAudioSettingsMessage('افتح إعدادات محرك النطق وثبّت صوتًا عربيًا، ثم ارجع وأعد الاختبار.');
+                              } catch (error) {
+                                console.error('[TTS] Could not open Android speech setup:', error);
+                                setAudioSettingsMessage(error?.message || 'تعذر فتح إعداد محرك النطق.');
+                              }
+                            }}
+                            className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-card hover:text-text-primary"
+                          >
+                            إعداد محرك النطق والأصوات
+                          </button>
                         )}
                       </>
                     )}

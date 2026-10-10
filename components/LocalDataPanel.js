@@ -6,6 +6,15 @@ import {
   listLocalRecords,
   saveLocalRecord,
 } from '../lib/local-data';
+import {
+  areTaskRemindersSupported,
+  cancelTaskReminder,
+  getTaskReminderStatus,
+  requestTaskReminderPermission,
+  scheduleTaskReminder,
+  synchronizeTaskReminders,
+} from '../lib/task-notifications';
+import { openNotificationSettings } from '../lib/notification-settings';
 
 const COLLECTIONS = {
   notes: {
@@ -19,7 +28,7 @@ const COLLECTIONS = {
   },
   tasks: {
     title: 'المهام',
-    description: 'مهامك محفوظة محليًا على هذا الجهاز فقط.',
+    description: 'مهامك محفوظة محليًا على هذا الجهاز فقط. يمكنك إضافة تذكير محلي اختياري.',
     newItemText: 'إضافة مهمة جديدة',
     editItemText: 'تعديل المهمة',
     saveBtnText: 'إضافة المهمة',
@@ -28,23 +37,46 @@ const COLLECTIONS = {
   },
 };
 
-export default function LocalDataPanel({ collection }) {
+function formatDateTimeInput(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 16);
+}
+
+export default function LocalDataPanel({
+  collection,
+  notificationStatus,
+  onNotificationStatusChange,
+}) {
   const config = COLLECTIONS[collection];
   const [records, setRecords] = useState([]);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
+  const [reminderAt, setReminderAt] = useState('');
+  const [taskRemindersSupported, setTaskRemindersSupported] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [taskFilter, setTaskFilter] = useState('all'); // 'all' | 'pending' | 'completed'
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [reminderMessage, setReminderMessage] = useState('');
 
   useEffect(() => {
     let active = true;
     listLocalRecords(collection)
       .then((items) => {
-        if (active) setRecords(items);
+        if (!active) return;
+        setRecords(items);
+        if (collection === 'tasks' && areTaskRemindersSupported()) {
+          synchronizeTaskReminders(items).catch((syncError) => {
+            console.error('[tasks] Could not synchronize task reminders:', syncError);
+            if (active) setReminderMessage('تعذر مزامنة تذكيرات المهام المحفوظة على هذا الجهاز.');
+          });
+        }
       })
       .catch((loadError) => {
         console.error(`[${collection}] Could not load local data:`, loadError);
@@ -56,6 +88,10 @@ export default function LocalDataPanel({ collection }) {
     return () => {
       active = false;
     };
+  }, [collection]);
+
+  useEffect(() => {
+    setTaskRemindersSupported(collection === 'tasks' && areTaskRemindersSupported());
   }, [collection]);
 
   // Real-time filtered records
@@ -81,7 +117,9 @@ export default function LocalDataPanel({ collection }) {
     setEditingId(record.id);
     setTitle(record.title || '');
     setBody(record.body || record.details || '');
+    setReminderAt(formatDateTimeInput(record.reminderAt));
     setError('');
+    setReminderMessage('');
   }
 
   // Cancel editing
@@ -89,7 +127,9 @@ export default function LocalDataPanel({ collection }) {
     setEditingId(null);
     setTitle('');
     setBody('');
+    setReminderAt('');
     setError('');
+    setReminderMessage('');
   }
 
   // Submit (Create or Update)
@@ -98,37 +138,100 @@ export default function LocalDataPanel({ collection }) {
     const normalizedTitle = title.trim();
     const normalizedBody = body.trim();
     if (!normalizedTitle || (collection === 'notes' && !normalizedBody)) return;
+    const reminderTimestamp = taskRemindersSupported && reminderAt
+      ? new Date(reminderAt).getTime()
+      : null;
+    if (reminderAt && taskRemindersSupported
+      && (!Number.isFinite(reminderTimestamp) || reminderTimestamp <= Date.now())) {
+      setReminderMessage('اختر وقتًا مستقبليًا للتذكير.');
+      return;
+    }
 
     setBusy(true);
     setError('');
+    setReminderMessage('');
     try {
+      let savedRecord;
+      let previousRecord;
       if (editingId) {
         // Mode: Update Existing
-        const existingRecord = records.find((r) => r.id === editingId);
-        const updated = await saveLocalRecord(collection, {
-          ...existingRecord,
+        previousRecord = records.find((record) => record.id === editingId);
+        savedRecord = await saveLocalRecord(collection, {
+          ...previousRecord,
           id: editingId,
           title: normalizedTitle,
           ...(collection === 'notes'
             ? { body: normalizedBody }
-            : { details: normalizedBody, completed: existingRecord?.completed ?? false }),
+            : {
+              details: normalizedBody,
+              completed: previousRecord?.completed ?? false,
+              ...(taskRemindersSupported
+                ? { reminderAt: reminderTimestamp ? new Date(reminderTimestamp).toISOString() : null }
+                : {}),
+            }),
         });
 
         setRecords((current) =>
-          current.map((item) => (item.id === editingId ? updated : item))
+          current.map((item) => (item.id === editingId ? savedRecord : item))
         );
-        cancelEditing();
       } else {
         // Mode: Create New
-        const record = await saveLocalRecord(collection, {
+        savedRecord = await saveLocalRecord(collection, {
           title: normalizedTitle,
           ...(collection === 'notes'
             ? { body: normalizedBody }
-            : { details: normalizedBody, completed: false }),
+            : {
+              details: normalizedBody,
+              completed: false,
+              ...(taskRemindersSupported && reminderTimestamp
+                ? { reminderAt: new Date(reminderTimestamp).toISOString() }
+                : {}),
+            }),
         });
-        setRecords((current) => [record, ...current]);
+        setRecords((current) => [savedRecord, ...current]);
+      }
+
+      if (collection === 'tasks' && taskRemindersSupported) {
+        try {
+          if (previousRecord?.reminderAt !== savedRecord.reminderAt
+            || (previousRecord && previousRecord.completed !== savedRecord.completed && savedRecord.completed)) {
+            await cancelTaskReminder(previousRecord);
+          }
+
+          if (savedRecord.reminderAt && !savedRecord.completed) {
+            let status = await getTaskReminderStatus();
+            if (status.permission !== 'granted' && status.permission !== 'denied') {
+              status = await requestTaskReminderPermission();
+            }
+            onNotificationStatusChange?.(status);
+            if (status.permission === 'granted' && status.channelEnabled) {
+              const scheduled = await scheduleTaskReminder(savedRecord);
+              setReminderMessage(scheduled
+                ? 'تم حفظ المهمة وجدولة التذكير على هذا الجهاز.'
+                : 'حُفظت المهمة، لكن لم يُجدول التذكير. تحقق من وقته وحالة الإشعارات.');
+            } else if (status.permission === 'denied' || !status.channelEnabled) {
+              setReminderMessage('حُفظت المهمة دون تذكير؛ الإشعارات محظورة. فعّلها من إعدادات التطبيق.');
+            } else {
+              setReminderMessage('حُفظت المهمة دون تذكير لأن إذن الإشعارات لم يُمنح.');
+            }
+          } else {
+            await cancelTaskReminder(savedRecord);
+            setReminderMessage(savedRecord.reminderAt
+              ? 'حُفظت المهمة المكتملة وأُلغي تذكيرها.'
+              : 'تم حفظ المهمة دون تذكير.');
+          }
+        } catch (notificationError) {
+          console.error('[tasks] Could not update task reminder:', notificationError);
+          setReminderMessage('حُفظت المهمة، لكن تعذر تحديث التذكير. تحقق من إعدادات الإشعارات.');
+        }
+      }
+
+      if (editingId) {
+        cancelEditing();
+      } else {
         setTitle('');
         setBody('');
+        setReminderAt('');
       }
     } catch (saveError) {
       console.error(`[${collection}] Could not save local data:`, saveError);
@@ -146,6 +249,15 @@ export default function LocalDataPanel({ collection }) {
     try {
       await deleteLocalRecord(collection, recordId);
       setRecords((current) => current.filter((record) => record.id !== recordId));
+      if (collection === 'tasks') {
+        try {
+          const record = records.find((item) => item.id === recordId);
+          await cancelTaskReminder(record);
+        } catch (notificationError) {
+          console.error('[tasks] Could not cancel deleted task reminder:', notificationError);
+          setReminderMessage('حُذفت المهمة، لكن تعذر إلغاء تذكيرها. راجع الإشعارات المجدولة.');
+        }
+      }
       if (editingId === recordId) {
         cancelEditing();
       }
@@ -167,6 +279,19 @@ export default function LocalDataPanel({ collection }) {
         completed: !record.completed,
       });
       setRecords((current) => current.map((item) => (item.id === record.id ? updated : item)));
+      try {
+        if (updated.completed) {
+          await cancelTaskReminder(updated);
+        } else {
+          const scheduled = await scheduleTaskReminder(updated);
+          if (updated.reminderAt && !scheduled) {
+            setReminderMessage('أُعيد فتح المهمة، لكن التذكير غير نشط. تحقق من الإذن وموعد التذكير.');
+          }
+        }
+      } catch (notificationError) {
+        console.error('[tasks] Could not update completion reminder:', notificationError);
+        setReminderMessage('تم تحديث المهمة، لكن تعذر تحديث تذكيرها.');
+      }
     } catch (saveError) {
       console.error('[tasks] Could not update local task:', saveError);
       setError('تعذر تحديث حالة المهمة.');
@@ -227,6 +352,62 @@ export default function LocalDataPanel({ collection }) {
           />
         </label>
 
+        {collection === 'tasks' && (
+          <div className="space-y-2 rounded-lg border border-base-border/70 bg-base-panel/60 p-3">
+            {taskRemindersSupported ? (
+              <>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-text-primary">موعد التذكير (اختياري)</span>
+                  <input
+                    type="datetime-local"
+                    value={reminderAt}
+                    min={formatDateTimeInput(Date.now())}
+                    onChange={(event) => {
+                      setReminderAt(event.target.value);
+                      setReminderMessage('');
+                    }}
+                    className="min-h-9 w-full rounded-lg border border-base-border bg-base-card px-3 text-xs text-text-primary outline-none focus:border-gold/60 focus:ring-1 focus:ring-gold/30"
+                  />
+                </label>
+                <p className="text-[11px] leading-5 text-text-secondary">
+                  نحتاج الإذن لإظهار تنبيه عند حلول الموعد حتى عند إغلاق التطبيق. سيُطلب بعد حفظ المهمة، ويُجدول التذكير محليًا دون إرسال بياناتها إلى خدمة إشعارات.
+                </p>
+                {notificationStatus?.error && (
+                  <p role="alert" className="text-[11px] text-amber-300">
+                    تعذر فحص الإشعارات: {notificationStatus.error}
+                  </p>
+                )}
+                {(notificationStatus?.permission === 'denied'
+                  || notificationStatus?.channelEnabled === false) && (
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-amber-300">
+                      إشعارات التطبيق أو قناة تذكيرات المهام محظورة.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await openNotificationSettings();
+                        } catch (settingsError) {
+                          console.error('[tasks] Could not open notification settings:', settingsError);
+                          setReminderMessage(settingsError?.message || 'تعذر فتح إعدادات الإشعارات.');
+                        }
+                      }}
+                      className="min-h-8 rounded-lg border border-amber-400/40 px-3 text-[11px] text-amber-200 hover:bg-amber-400/10"
+                    >
+                      فتح إعدادات إشعارات التطبيق
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-[11px] leading-5 text-text-secondary">
+                التذكيرات المحلية متاحة داخل تطبيق Smart.z المثبّت على Android أو iOS.
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="flex gap-2 pt-1">
           <button
             type="submit"
@@ -248,6 +429,18 @@ export default function LocalDataPanel({ collection }) {
       </form>
 
       {error && <p role="alert" className="text-xs text-red-400 bg-red-500/10 p-2 rounded-lg border border-red-500/20">{error}</p>}
+      {reminderMessage && (
+        <p
+          role={reminderMessage.includes('تعذر') || reminderMessage.includes('محظورة') ? 'alert' : 'status'}
+          className={`rounded-lg border p-2 text-xs ${
+            reminderMessage.includes('تعذر') || reminderMessage.includes('محظورة')
+              ? 'border-amber-500/20 bg-amber-500/10 text-amber-200'
+              : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'
+          }`}
+        >
+          {reminderMessage}
+        </p>
+      )}
 
       {/* Search & Filter Bar */}
       {loaded && records.length > 0 && (
@@ -340,6 +533,17 @@ export default function LocalDataPanel({ collection }) {
                 {(record.body || record.details) && (
                   <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-text-secondary">
                     {record.body || record.details}
+                  </p>
+                )}
+                {collection === 'tasks' && record.reminderAt && (
+                  <p className="mt-1 text-[11px] text-gold/90">
+                    🔔 {new Date(record.reminderAt).toLocaleString('ar-EG', {
+                      day: 'numeric',
+                      month: 'short',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                    {record.completed ? ' · أُلغي التذكير لإكمال المهمة' : ''}
                   </p>
                 )}
                 <span className="mt-1.5 block text-[10px] text-text-secondary/70 font-mono">
