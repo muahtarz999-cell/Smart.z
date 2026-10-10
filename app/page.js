@@ -341,16 +341,36 @@ export default function Home() {
 
   useEffect(() => {
     if (activeSection !== 'audio') return undefined;
-    if (typeof window.Audio === 'undefined') {
+    const synthesis = window.speechSynthesis;
+    if (!synthesis || typeof window.SpeechSynthesisUtterance === 'undefined') {
       setAudioSupported(false);
       setAvailableArabicVoices([]);
       return undefined;
     }
 
     setAudioSupported(true);
-    setSelectedVoiceId(getSelectedVoiceId() || 'auto');
-    setAvailableArabicVoices(getArabicVoices());
-    return undefined;
+    const refreshVoices = () => {
+      const voices = getArabicVoices();
+      setAvailableArabicVoices(voices);
+
+      const savedVoiceId = getSelectedVoiceId();
+      if (savedVoiceId && voices.length && !voices.some((voice) => getVoiceId(voice) === savedVoiceId)) {
+        try {
+          saveSelectedVoiceId(null);
+          setAudioSettingsMessage('تم تحديث قائمة أصوات الجهاز؛ اختر صوتًا متاحًا أو اترك الاختيار تلقائيًا.');
+        } catch (error) {
+          console.error('[TTS] Could not reset an unavailable saved voice:', error);
+          setAudioSettingsMessage('تعذر تحديث تفضيل الصوت على هذا الجهاز.');
+        }
+        setSelectedVoiceId('auto');
+      } else {
+        setSelectedVoiceId(savedVoiceId || 'auto');
+      }
+    };
+
+    refreshVoices();
+    synthesis.addEventListener('voiceschanged', refreshVoices);
+    return () => synthesis.removeEventListener('voiceschanged', refreshVoices);
   }, [activeSection]);
 
   // تهيئة تدفق الصوت وبدء الاستماع بعد تفاعل المستخدم
@@ -358,7 +378,6 @@ export default function Home() {
     if (customerAccess.status !== 'active' || !authUser) return undefined;
 
     const audioFlow = new AudioFlowManager({
-      cacheNamespace: authUser.id,
       getAccessToken: async () => {
         const { data, error } = await supabase.auth.getSession();
         return error ? null : data.session?.access_token ?? null;
@@ -373,7 +392,9 @@ export default function Home() {
       },
       onAudioError: (error) => {
         console.error('[Page] Audio error:', error);
-        if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(error?.name)) {
+        if (error?.message?.startsWith('تعذر تشغيل الرد الصوتي')) {
+          setAudioPlaybackError(error.message);
+        } else if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(error?.name)) {
           setAudioPlaybackError('لم يُسمح باستخدام الميكروفون. اسمح بالوصول إليه من إعدادات الموقع أو التطبيق ثم أعد المحاولة.');
         } else if (['NotFoundError', 'DevicesNotFoundError'].includes(error?.name)) {
           setAudioPlaybackError('لم يتم العثور على ميكروفون متاح على هذا الجهاز.');
@@ -1209,7 +1230,7 @@ export default function Home() {
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">اختيار صوت المساعد</h2>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        اختر صوتًا عربيًا من Groq واستمع إلى عينة. يُحفظ الصوت المُنشأ على هذا الجهاز لإعادة تشغيله عند تكرار الرد.
+                        اختر صوتًا عربيًا من الأصوات المثبتة على جهازك، واستمع إلى عينة قبل اختياره. لا يحتاج النطق إلى اتصال بالإنترنت.
                       </p>
                     </div>
 
@@ -1236,11 +1257,11 @@ export default function Home() {
                             }}
                             className="h-11 w-full rounded-lg border border-base-border bg-base-card px-3 text-right text-sm text-text-primary focus:border-gold"
                           >
-                            <option value="auto">تلقائي — نورة</option>
+                            <option value="auto">تلقائي — صوت عربي متاح</option>
                             {selectedVoiceId !== 'auto' &&
                               !availableArabicVoices.some((voice) => getVoiceId(voice) === selectedVoiceId) && (
                                 <option value={selectedVoiceId} disabled>
-                                  الصوت المحفوظ غير متاح — ستُستخدم نورة تلقائيًا
+                                  الصوت المحفوظ غير متاح — سيُستخدم صوت الجهاز تلقائيًا
                                 </option>
                               )}
                             {availableArabicVoices.map((voice) => (
@@ -1254,8 +1275,13 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={() => {
-                            setAvailableArabicVoices(getArabicVoices());
-                            setAudioSettingsMessage('تم تحديث قائمة أصوات Groq العربية.');
+                            const voices = getArabicVoices();
+                            setAvailableArabicVoices(voices);
+                            setAudioSettingsMessage(
+                              voices.length
+                                ? `تم العثور على ${voices.length} صوت عربي على هذا الجهاز.`
+                                : 'لم تظهر أصوات عربية؛ تحقق من تثبيت صوت عربي في إعدادات الجهاز ثم أعد المحاولة.'
+                            );
                           }}
                           className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-card hover:text-text-primary"
                         >
@@ -1271,13 +1297,15 @@ export default function Home() {
                             try {
                               const played = await speak('مرحبًا، أنا مساعدك الشخصي. كيف أقدر أساعدك اليوم؟', {
                                 voiceId: selectedVoiceId === 'auto' ? null : selectedVoiceId,
-                                accessToken: authSession?.access_token,
-                                cacheNamespace: authUser?.id,
+                                rate: 1.04,
+                                pitch: 1.06,
                               });
-                              if (!played) setAudioSettingsMessage('تعذر تشغيل العينة. تحقق من الاتصال وحاول مرة أخرى.');
+                              if (!played) {
+                                setAudioSettingsMessage('تعذر تشغيل العينة. تحقق من وجود صوت مثبت على الجهاز، أو اختر صوتًا آخر.');
+                              }
                             } catch (error) {
                               console.error('[TTS] Voice preview failed:', error);
-                              setAudioSettingsMessage('تعذر تشغيل عينة الصوت.');
+                              setAudioSettingsMessage(error?.message || 'تعذر تشغيل عينة الصوت على هذا الجهاز.');
                             } finally {
                               setAudioPreviewing(false);
                             }
@@ -1289,11 +1317,11 @@ export default function Home() {
 
                         {availableArabicVoices.length === 0 && (
                           <p className="rounded-lg border border-base-border bg-base-card p-3 text-xs leading-5 text-text-secondary">
-                            تعذر تحميل خيارات الصوت. أعد فتح الإعدادات وحاول مرة أخرى.
+                            لم يوفّر الجهاز أصواتًا عربية بعد. قد تتأخر القائمة قليلًا؛ أعد تحديثها أو ثبّت صوتًا عربيًا من إعدادات تحويل النص إلى كلام في الجهاز. سيُستخدم صوت الجهاز الافتراضي عند الاختيار التلقائي.
                           </p>
                         )}
                         <p className="text-xs leading-5 text-text-secondary">
-                          يُرسل نص الرد إلى Groq لإنشاء الصوت، ويتطلب إنشاء رد جديد اتصالًا بالإنترنت. تُخزّن المقاطع على الجهاز (حتى 5 MB) وتعمل دون اتصال عند تكرار النص والصوت نفسيهما؛ لا يحتاج تشغيلها إلى Chrome أو إذن الميكروفون.
+                          يُحوّل الجهاز الرد إلى كلام محليًا باستخدام محرك النطق والأصوات المثبتة فيه؛ لا يُرسل النص إلى خدمة صوت خارجية. إنشاء رد المساعد نفسه يحتاج اتصالًا بالإنترنت.
                         </p>
                         {audioSettingsMessage && (
                           <p role="status" className="text-xs text-text-secondary">{audioSettingsMessage}</p>
