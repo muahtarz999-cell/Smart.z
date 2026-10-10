@@ -4,6 +4,9 @@
     <queries>
         <package android:name="com.whatsapp" />
         <package android:name="com.twitter.android" />
+        <intent>
+            <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
+        </intent>
     </queries>
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

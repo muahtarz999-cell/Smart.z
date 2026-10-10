@@ -21,9 +21,11 @@ import {
 import {
   canOpenSpeechEngineSettings,
   getArabicVoiceInfo,
+  getSpeechDiagnostics,
   isSpeechSupported,
   openSpeechEngineSettings,
   speak,
+  testSpeechPlayback,
 } from '../lib/tts';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import {
@@ -132,6 +134,8 @@ export default function Home() {
   const [audioSupported, setAudioSupported] = useState(true);
   const [audioVoiceInfo, setAudioVoiceInfo] = useState(null);
   const [audioVoiceError, setAudioVoiceError] = useState('');
+  const [audioDiagnostics, setAudioDiagnostics] = useState(null);
+  const [audioDiagnosticsLoading, setAudioDiagnosticsLoading] = useState(false);
   const [audioPlaybackError, setAudioPlaybackError] = useState('');
   const [audioStarting, setAudioStarting] = useState(false);
   const [taskNotificationStatus, setTaskNotificationStatus] = useState(null);
@@ -396,6 +400,22 @@ export default function Home() {
       setAudioSupported(isSpeechSupported());
       setAudioVoiceInfo(null);
       setAudioVoiceError('');
+      setAudioDiagnosticsLoading(true);
+      getSpeechDiagnostics()
+        .then((diagnostics) => {
+          if (active) setAudioDiagnostics(diagnostics);
+        })
+        .catch((error) => {
+          console.error('[TTS] Could not collect speech diagnostics:', error);
+          if (active) {
+            setAudioDiagnostics({
+              error: error?.message || 'تعذر جمع معلومات تشخيص محركات النطق.',
+            });
+          }
+        })
+        .finally(() => {
+          if (active) setAudioDiagnosticsLoading(false);
+        });
       getArabicVoiceInfo()
         .then((voiceInfo) => {
           if (active) setAudioVoiceInfo(voiceInfo);
@@ -1304,12 +1324,12 @@ export default function Home() {
                       </p>
                     </div>
 
-                    {!audioSupported ? (
-                      <p role="alert" className="rounded-lg border border-base-border bg-base-card p-3 text-sm leading-6 text-text-secondary">
-                        النطق الصوتي غير مدعوم في هذا المتصفح أو التطبيق.
-                      </p>
-                    ) : (
-                      <>
+                    <>
+                      {!audioSupported && (
+                        <p role="alert" className="rounded-lg border border-base-border bg-base-card p-3 text-sm leading-6 text-text-secondary">
+                          لا يتوفر محرك نطق قابل للتشغيل. يعرض التشخيص أدناه حالة كل واجهة والخطأ المُعاد.
+                        </p>
+                      )}
                         {audioVoiceInfo ? (
                           <p className="text-xs leading-5 text-text-secondary">
                             {audioVoiceInfo.native ? 'محرك Android' : 'محرك المتصفح'}: {audioVoiceInfo.name} ({audioVoiceInfo.language})
@@ -1318,6 +1338,7 @@ export default function Home() {
                               : audioVoiceInfo.localService === false
                                 ? 'الصوت يتطلب اتصالًا بالشبكة'
                                 : 'لم يحدد الجهاز مصدر الصوت'}
+                            {' '}— معلومة عن الصوت المتاح وليست إثباتًا لنجاح التشغيل
                           </p>
                         ) : audioVoiceError ? (
                           <p role="alert" className="text-xs leading-5 text-text-secondary">
@@ -1345,17 +1366,20 @@ export default function Home() {
                             setAudioSettingsMessage('');
                             if (resumeListening) audioFlow.vad.pause();
                             try {
-                              const played = await speak('مرحبًا، هذا اختبار للصوت العربي.');
-                              if (played) {
-                                setAudioSettingsMessage(
-                                  `نجح تشغيل العينة${audioVoiceInfo?.name ? ` باستخدام ${audioVoiceInfo.name}` : ''}.`
-                                );
-                              } else {
-                                setAudioSettingsMessage('لم تكتمل العينة؛ ربما أوقفها النظام أو المستخدم.');
-                              }
+                              const result = await testSpeechPlayback('مرحبًا، هذا اختبار للصوت العربي.');
+                              const engineName = result.engine === 'android-native'
+                                ? 'إضافة Android الأصلية'
+                                : result.engine === 'native-plugin'
+                                  ? 'إضافة النطق الأصلية'
+                                  : 'محرك المتصفح';
+                              setAudioSettingsMessage(result.success
+                                ? `اكتمل اختبار النطق بنجاح عبر ${engineName} (اكتمل حدث النطق).`
+                                : `فشل اختبار النطق عبر ${engineName}: ${result.error}`);
+                              const diagnostics = await getSpeechDiagnostics();
+                              setAudioDiagnostics(diagnostics);
                             } catch (error) {
                               console.error('[TTS] Voice preview failed:', error);
-                              setAudioSettingsMessage(error?.message || 'تعذر تشغيل عينة الصوت.');
+                              setAudioSettingsMessage(`فشل اختبار النطق: ${error?.message || String(error)}`);
                             } finally {
                               if (resumeListening && audioFlow.vad?.isRunning) {
                                 audioFlow.vad.resume();
@@ -1372,28 +1396,75 @@ export default function Home() {
                           يعتمد توفر الصوت واتصاله بالإنترنت على محرك النطق المحدد في إعدادات الجهاز. لضمان النطق دون اتصال، ثبّت صوتًا عربيًا محليًا من إعدادات Android.
                         </p>
                         {audioSettingsMessage && (
-                          <p role="status" className="text-xs text-text-secondary">{audioSettingsMessage}</p>
+                          <p
+                            role={audioSettingsMessage.includes('فشل') ? 'alert' : 'status'}
+                            className={`text-xs leading-5 ${
+                              audioSettingsMessage.includes('فشل') ? 'text-red-300' : 'text-text-secondary'
+                            }`}
+                          >
+                            {audioSettingsMessage}
+                          </p>
                         )}
-                        {audioVoiceError && canOpenSpeechEngineSettings() && (
+                        {canOpenSpeechEngineSettings() && (
                           <button
                             type="button"
                             onClick={async () => {
-                              setAudioSettingsMessage('');
+                              setAudioSettingsMessage('جارٍ استدعاء openInstall لفتح فحص بيانات محرك النطق في Android...');
                               try {
                                 await openSpeechEngineSettings();
-                                setAudioSettingsMessage('افتح إعدادات محرك النطق وثبّت صوتًا عربيًا، ثم ارجع وأعد الاختبار.');
+                                setAudioSettingsMessage('اكتمل استدعاء openInstall. إذا ظهرت شاشة إعداد محرك النطق، ثبّت البيانات المطلوبة ثم ارجع إلى التطبيق؛ سيُعاد الفحص عند العودة ويمكنك تشغيل العينة مجددًا.');
                               } catch (error) {
                                 console.error('[TTS] Could not open Android speech setup:', error);
-                                setAudioSettingsMessage(error?.message || 'تعذر فتح إعداد محرك النطق.');
+                                setAudioSettingsMessage(`فشل openInstall: ${error?.message || String(error)}`);
                               }
                             }}
                             className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-card hover:text-text-primary"
                           >
-                            إعداد محرك النطق والأصوات
+                            فتح إعداد تثبيت بيانات محرك النطق
                           </button>
                         )}
-                      </>
-                    )}
+                        <section
+                          aria-label="تشخيص محركات النطق"
+                          className="space-y-2 rounded-lg border border-base-border bg-base-card p-3"
+                        >
+                          <h3 className="text-xs font-semibold text-text-primary">تشخيص محركات النطق</h3>
+                          {audioDiagnosticsLoading && !audioDiagnostics ? (
+                            <p className="text-[11px] text-text-secondary">جارٍ جمع معلومات المحركات والأصوات...</p>
+                          ) : audioDiagnostics?.error ? (
+                            <p role="alert" className="text-[11px] text-red-300">{audioDiagnostics.error}</p>
+                          ) : audioDiagnostics ? (
+                            <>
+                              <p className="text-[11px] text-text-secondary">
+                                المنصة: {audioDiagnostics.platform} · Capacitor Native: {audioDiagnostics.capacitorNative ? 'نعم' : 'لا'} · إضافة TextToSpeech: {audioDiagnostics.textToSpeechPluginAvailable ? 'متاحة' : 'غير متاحة'} · SpeechSynthesis: {audioDiagnostics.browserSpeechSynthesisAvailable ? 'متاح' : 'غير متاح'}
+                              </p>
+                              {[
+                                ['الإضافة الأصلية', audioDiagnostics.nativeEngine, 'getSupportedVoices'],
+                                ['محرك المتصفح', audioDiagnostics.browserEngine, 'getVoices'],
+                              ].map(([label, engine, queryName]) => (
+                                <div key={label} className="border-t border-base-border/70 pt-2 text-[11px] leading-5 text-text-secondary">
+                                  <p className="font-medium text-text-primary">{label}</p>
+                                  <p>
+                                    {queryName}: {engine.available
+                                      ? engine.getSupportedVoicesSucceeded ? 'نجح' : 'فشل'
+                                      : 'غير متاح'}
+                                    {' '}· عدد الأصوات: {engine.voiceCount ?? 'غير متاح'}
+                                    {' '}· اللغات العربية: {engine.arabicLanguages?.length
+                                      ? engine.arabicLanguages.join('، ')
+                                      : 'لا توجد أصوات عربية مُعادة'}
+                                  </p>
+                                  {engine.error && (
+                                    <p role="alert" className="break-words text-red-300">
+                                      الخطأ الفعلي: {engine.error}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </>
+                          ) : (
+                            <p className="text-[11px] text-text-secondary">لم تُجمع معلومات التشخيص بعد.</p>
+                          )}
+                        </section>
+                    </>
                   </div>
                 ) : activeSection === 'privacy' ? (
                   <div className="space-y-7">

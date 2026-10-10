@@ -101,6 +101,35 @@ test('plays speech chunks sequentially and reports synthesis errors', async () =
   await assert.rejects(tts.speak('اختبار'), /synthesis-failed/);
 });
 
+test('diagnoses browser voice results and only reports successful playback after onend', async () => {
+  setupSpeechSynthesis([
+    createVoice('en-US'),
+    createVoice('ar-SA'),
+    createVoice('ar-JO'),
+  ], (utterance) => setTimeout(() => utterance.onend(), 0));
+
+  const diagnostics = await tts.getSpeechDiagnostics();
+  assert.equal(diagnostics.platform, 'web');
+  assert.equal(diagnostics.capacitorNative, false);
+  assert.equal(diagnostics.textToSpeechPluginAvailable, false);
+  assert.equal(diagnostics.browserEngine.getSupportedVoicesSucceeded, true);
+  assert.equal(diagnostics.browserEngine.voiceCount, 3);
+  assert.deepEqual(diagnostics.browserEngine.arabicLanguages, ['ar-JO', 'ar-SA']);
+
+  assert.deepEqual(
+    await tts.testSpeechPlayback('عينة'),
+    { success: true, engine: 'browser', error: null }
+  );
+
+  const synthesis = window.speechSynthesis;
+  synthesis.getVoices = () => {
+    throw new Error('browser-voice-query-failed');
+  };
+  const failedDiagnostics = await tts.getSpeechDiagnostics();
+  assert.equal(failedDiagnostics.browserEngine.getSupportedVoicesSucceeded, false);
+  assert.match(failedDiagnostics.browserEngine.error, /browser-voice-query-failed/);
+});
+
 test('uses native Android TTS voices and reports native engine failures', async () => {
   let activeUtterances = 0;
   let maxActiveUtterances = 0;
@@ -147,15 +176,41 @@ test('uses native Android TTS voices and reports native engine failures', async 
     localService: true,
     native: true,
   });
+  const diagnostics = await nativeTts.getSpeechDiagnostics();
+  assert.equal(diagnostics.platform, 'android');
+  assert.equal(diagnostics.capacitorNative, true);
+  assert.equal(diagnostics.textToSpeechPluginAvailable, true);
+  assert.equal(diagnostics.nativeEngine.getSupportedVoicesSucceeded, true);
+  assert.equal(diagnostics.nativeEngine.voiceCount, 3);
+  assert.deepEqual(diagnostics.nativeEngine.arabicLanguages, ['ar-EG', 'ar-JO', 'ar-SA']);
   assert.equal(await nativeTts.speak('أ'.repeat(250)), true);
   assert.equal(maxActiveUtterances, 1);
+  assert.deepEqual(
+    await nativeTts.testSpeechPlayback('عينة'),
+    { success: true, engine: 'android-native', error: null }
+  );
 
   nativePlugin.speak = async () => {
     throw new Error('native-engine-failed');
   };
   await assert.rejects(nativeTts.speak('اختبار'), /native-engine-failed/);
+  assert.deepEqual(
+    await nativeTts.testSpeechPlayback('اختبار'),
+    { success: false, engine: 'android-native', error: 'فشل محرك النطق في android: native-engine-failed.' }
+  );
+
+  nativePlugin.getSupportedVoices = async () => {
+    throw new Error('native-voice-query-failed');
+  };
+  const failedDiagnostics = await nativeTts.getSpeechDiagnostics();
+  assert.equal(failedDiagnostics.nativeEngine.getSupportedVoicesSucceeded, false);
+  assert.match(failedDiagnostics.nativeEngine.error, /native-voice-query-failed/);
 
   await nativeTts.openSpeechEngineSettings();
   assert.equal(installOpened, true);
+  nativePlugin.openInstall = async () => {
+    throw new Error('install-settings-failed');
+  };
+  await assert.rejects(nativeTts.openSpeechEngineSettings(), /install-settings-failed/);
   delete globalThis.__nativeSpeechMock;
 });
