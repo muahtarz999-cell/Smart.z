@@ -129,6 +129,7 @@ export default function Home() {
   const [audioPreviewing, setAudioPreviewing] = useState(false);
   const [audioSupported, setAudioSupported] = useState(true);
   const [audioPlaybackError, setAudioPlaybackError] = useState('');
+  const [audioStarting, setAudioStarting] = useState(false);
   const [orbState, setOrbState] = useState('idle');
   const audioFlowRef = useRef(null);
   const [customerDataUserId, setCustomerDataUserId] = useState(null);
@@ -352,49 +353,58 @@ export default function Home() {
     return undefined;
   }, [activeSection]);
 
-  // ابدأ AudioFlow عند تحميل المكوّن
+  // تهيئة تدفق الصوت وبدء الاستماع بعد تفاعل المستخدم
   useEffect(() => {
     if (customerAccess.status !== 'active' || !authUser) return undefined;
 
-    let audioFlow = null;
-
-    const initAudioFlow = async () => {
-      audioFlow = new AudioFlowManager({
-        cacheNamespace: authUser.id,
-        getAccessToken: async () => {
-          const { data, error } = await supabase.auth.getSession();
-          return error ? null : data.session?.access_token ?? null;
-        },
-        onStateChange: (state) => {
-          console.log('[Page] Audio state:', state);
-          setOrbState(state);
-        },
-        onReply: (text) => {
-          setReply(text);
-          setAudioPlaybackError('');
-        },
-        onAudioError: (error) => {
-          setAudioPlaybackError(error?.message || 'تعذر إنشاء الرد الصوتي. تحقق من الاتصال وحاول مجددًا.');
-        },
-      });
-
-      const started = await audioFlow.start();
-      if (!started) {
-        console.error('Failed to start audio flow');
-        setOrbState('error');
-      }
-
-      audioFlowRef.current = audioFlow;
-    };
-
-    initAudioFlow();
+    const audioFlow = new AudioFlowManager({
+      cacheNamespace: authUser.id,
+      getAccessToken: async () => {
+        const { data, error } = await supabase.auth.getSession();
+        return error ? null : data.session?.access_token ?? null;
+      },
+      onStateChange: (state) => {
+        console.log('[Page] Audio state:', state);
+        setOrbState(state);
+      },
+      onReply: (text) => {
+        setReply(text);
+        setAudioPlaybackError('');
+      },
+      onAudioError: (error) => {
+        console.error('[Page] Audio error:', error);
+        if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(error?.name)) {
+          setAudioPlaybackError('لم يُسمح باستخدام الميكروفون. اسمح بالوصول إليه من إعدادات الموقع أو التطبيق ثم أعد المحاولة.');
+        } else if (['NotFoundError', 'DevicesNotFoundError'].includes(error?.name)) {
+          setAudioPlaybackError('لم يتم العثور على ميكروفون متاح على هذا الجهاز.');
+        } else if (['NotReadableError', 'TrackStartError'].includes(error?.name)) {
+          setAudioPlaybackError('تعذر تشغيل الميكروفون. تحقق من أنه غير مستخدم في تطبيق آخر ثم أعد المحاولة.');
+        } else {
+          setAudioPlaybackError('تعذر تفعيل الميكروفون. تحقق من اتصال آمن وأذونات الميكروفون ثم أعد المحاولة.');
+        }
+      },
+    });
+    audioFlowRef.current = audioFlow;
 
     return () => {
-      if (audioFlowRef.current) {
-        audioFlowRef.current.stop();
-      }
+      audioFlow.stop();
+      if (audioFlowRef.current === audioFlow) audioFlowRef.current = null;
     };
   }, [customerAccess.status, authUser?.id]);
+
+  async function startAudioListening() {
+    const audioFlow = audioFlowRef.current;
+    if (!audioFlow || audioStarting) return;
+
+    setAudioStarting(true);
+    setAudioPlaybackError('');
+    try {
+      const started = await audioFlow.start();
+      if (!started) setOrbState('error');
+    } finally {
+      setAudioStarting(false);
+    }
+  }
 
   // عند المغادرة، تنظيف الموارد
   useEffect(() => {
@@ -692,7 +702,11 @@ export default function Home() {
                   ? 'يتطلب حسابًا مفعّلًا'
                   : loading
                     ? 'جاري التفكير...'
-                    : 'يستمع الآن'}
+                    : orbState === 'listening' || orbState === 'listening-active'
+                      ? 'يستمع الآن'
+                      : orbState === 'transcribing' || orbState === 'thinking' || orbState === 'speaking'
+                        ? 'جارٍ معالجة الصوت...'
+                        : 'فعّل الميكروفون للاستماع'}
             </span>
             <button
               aria-label={expanded ? 'تصغير الشاشة' : 'توسيع الشاشة'}
@@ -713,12 +727,22 @@ export default function Home() {
                   أهلًا بك
                 </p>
                 <p className="text-text-secondary text-xs mt-1 text-center">
-                  {reply || 'قل لي بماذا أساعدك'}
+                  {reply || (orbState === 'listening' ? 'قل لي بماذا أساعدك' : 'فعّل الميكروفون لبدء المحادثة الصوتية')}
                 </p>
                 {audioPlaybackError && (
                   <p role="status" className="mt-2 max-w-xs text-center text-xs leading-5 text-amber-300">
                     {audioPlaybackError}
                   </p>
+                )}
+                {(orbState === 'idle' || orbState === 'error') && (
+                  <button
+                    type="button"
+                    onClick={startAudioListening}
+                    disabled={audioStarting}
+                    className="mt-4 rounded-lg bg-gold px-4 py-2 text-sm font-semibold text-base-bg disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {audioStarting ? 'جارٍ تفعيل الميكروفون...' : 'تفعيل الميكروفون'}
+                  </button>
                 )}
               </div>
 
@@ -1010,7 +1034,7 @@ export default function Home() {
                         </li>
                       </ul>
                       <p className="text-xs leading-5 text-text-secondary">
-                        تُعالج الرسائل النصية الواردة عبر Meta ومزوّد المساعد Groq دون حفظ سجل محادثات في قاعدة بيانات Smart.z؛ تنطبق سياسات معالجة البيانات الخاصة بكل مزوّد.
+                        تُعالج الرسائل النصية الواردة عبر Meta ومزوّد المساعد Groq، وقد تُحوّل إلى OpenRouter عند تعذّر Groq، دون حفظ سجل محادثات في قاعدة بيانات Smart.z؛ تنطبق سياسات معالجة البيانات الخاصة بكل مزوّد.
                       </p>
                       <WhatsAppClusterConnection
                         authSession={authSession}
@@ -1292,7 +1316,7 @@ export default function Home() {
                             ? 'التخزين محلي، لكن النظام لم يضمن الاحتفاظ به عند انخفاض مساحة الجهاز. احتفظ بنسخة احتياطية إذا كانت البيانات مهمة.'
                             : 'التخزين محلي؛ هذا المتصفح لا يوفّر حماية إضافية من إزالة البيانات عند انخفاض مساحة الجهاز.'}
                       </p>
-                      <p className="mt-2">تُرسل الرسائل النصية والتسجيلات الصوتية إلى Groq للمعالجة وتوليد الرد؛ لا تُرسل الملاحظات أو المهام أو الذكريات المحلية.</p>
+                      <p className="mt-2">تُرسل الرسائل النصية والتسجيلات الصوتية إلى Groq للمعالجة وتوليد الرد. إذا تعذّر Groq، قد يُرسل نص الطلب إلى OpenRouter كبديل لتوليد الردود النصية؛ لا تُرسل الملاحظات أو المهام أو الذكريات المحلية.</p>
                       <p className="mt-2">عند تأكيد فتح مسودة WhatsApp أو X، يُشارك الرقم ونص المسودة مع الخدمة الخارجية لفتحها؛ لا يتم الإرسال أو النشر إلا بضغطك داخل التطبيق نفسه.</p>
                     </div>
 
