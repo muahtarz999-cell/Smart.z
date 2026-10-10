@@ -22,7 +22,7 @@ export default function InstallPrompt() {
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
       wasControlled = Boolean(navigator.serviceWorker.controller);
       navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
-      navigator.serviceWorker.register('/sw-v4.js').catch((err) => {
+      navigator.serviceWorker.register('/sw.js').catch((err) => {
         console.warn('[PWA] Service Worker registration failed:', err);
       });
     }

@@ -1292,8 +1292,18 @@ export default function Home() {
                           type="button"
                           disabled={audioPreviewing}
                           onClick={async () => {
+                            const audioFlow = audioFlowRef.current;
+                            if (audioFlow?.isProcessing) {
+                              setAudioSettingsMessage('انتظر انتهاء رد المساعد قبل تجربة العينة.');
+                              return;
+                            }
+
+                            const resumeListening = Boolean(
+                              audioFlow?.isVADRunning && audioFlow.vad?.isRunning
+                            );
                             setAudioPreviewing(true);
                             setAudioSettingsMessage('');
+                            if (resumeListening) audioFlow.vad.pause();
                             try {
                               const played = await speak('مرحبًا، أنا مساعدك الشخصي. كيف أقدر أساعدك اليوم؟', {
                                 voiceId: selectedVoiceId === 'auto' ? null : selectedVoiceId,
@@ -1307,6 +1317,9 @@ export default function Home() {
                               console.error('[TTS] Voice preview failed:', error);
                               setAudioSettingsMessage(error?.message || 'تعذر تشغيل عينة الصوت على هذا الجهاز.');
                             } finally {
+                              if (resumeListening && audioFlow.vad?.isRunning) {
+                                audioFlow.vad.resume();
+                              }
                               setAudioPreviewing(false);
                             }
                           }}
