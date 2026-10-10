@@ -5,14 +5,7 @@ export const runtime = 'edge';
 
 const GROQ_SPEECH_ENDPOINT = 'https://api.groq.com/openai/v1/audio/speech';
 const GROQ_SPEECH_MODEL = 'canopylabs/orpheus-arabic-saudi';
-const SUPPORTED_VOICES = new Set([
-  'abdullah',
-  'fahad',
-  'sultan',
-  'lulwa',
-  'noura',
-  'aisha',
-]);
+const DEFAULT_VOICE = 'noura';
 const MAX_INPUT_CHARACTERS = 200;
 
 function errorResponse(message, status) {
@@ -34,13 +27,10 @@ export async function POST(request) {
   }
 
   const text = typeof body?.text === 'string' ? body.text.trim() : '';
-  const voice = typeof body?.voice === 'string' ? body.voice : '';
   if (!text) return errorResponse('Speech text is required.', 400);
   if ([...text].length > MAX_INPUT_CHARACTERS) {
     return errorResponse(`Speech text must not exceed ${MAX_INPUT_CHARACTERS} characters.`, 400);
   }
-  if (!SUPPORTED_VOICES.has(voice)) return errorResponse('Unsupported Arabic voice.', 400);
-
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
     console.error('[Speech API] Missing GROQ_API_KEY');
@@ -58,7 +48,7 @@ export async function POST(request) {
       body: JSON.stringify({
         model: GROQ_SPEECH_MODEL,
         input: text,
-        voice,
+        voice: DEFAULT_VOICE,
         response_format: 'wav',
       }),
       cache: 'no-store',
@@ -69,11 +59,21 @@ export async function POST(request) {
   }
 
   if (!groqResponse.ok) {
-    console.error('[Speech API] Groq returned an error:', groqResponse.status);
+    const providerError = await groqResponse.json().catch(() => null);
+    const providerMessage = typeof providerError?.error?.message === 'string'
+      ? providerError.error.message.slice(0, 300)
+      : '';
+    console.error('[Speech API] Groq returned an error:', {
+      status: groqResponse.status,
+      code: providerError?.error?.code,
+      message: providerMessage,
+    });
     return errorResponse(
       groqResponse.status === 429
         ? 'Speech service is busy. Please try again shortly.'
-        : 'Speech generation failed.',
+        : providerMessage
+          ? `Groq ${groqResponse.status}: ${providerMessage}`
+          : `Speech generation failed (Groq ${groqResponse.status}).`,
       groqResponse.status === 429 ? 429 : 502
     );
   }
