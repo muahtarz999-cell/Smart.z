@@ -18,13 +18,7 @@ import {
   migrateLegacyMemories,
   saveLocalRecord,
 } from '../lib/local-data';
-import {
-  getArabicVoices,
-  getSelectedVoiceId,
-  getVoiceId,
-  saveSelectedVoiceId,
-  speak,
-} from '../lib/tts';
+import { getArabicVoiceInfo, speak } from '../lib/tts';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import {
   clearWhatsAppSignupState,
@@ -123,11 +117,11 @@ export default function Home() {
   const [message, setMessage] = useState('');
   const [reply, setReply] = useState('');
   const [loading, setLoading] = useState(false);
-  const [availableArabicVoices, setAvailableArabicVoices] = useState([]);
-  const [selectedVoiceId, setSelectedVoiceId] = useState('auto');
   const [audioSettingsMessage, setAudioSettingsMessage] = useState('');
   const [audioPreviewing, setAudioPreviewing] = useState(false);
   const [audioSupported, setAudioSupported] = useState(true);
+  const [audioVoiceInfo, setAudioVoiceInfo] = useState(null);
+  const [audioVoiceError, setAudioVoiceError] = useState('');
   const [audioPlaybackError, setAudioPlaybackError] = useState('');
   const [audioStarting, setAudioStarting] = useState(false);
   const [orbState, setOrbState] = useState('idle');
@@ -209,7 +203,6 @@ export default function Home() {
             setProfileLoaded(false);
             setSavedMemories([]);
             setMemoriesLoaded(false);
-            setSelectedVoiceId('auto');
           }
           setCustomerDataUserId(authUser.id);
           setCustomerAccess({ status: 'active', message: '' });
@@ -341,36 +334,22 @@ export default function Home() {
 
   useEffect(() => {
     if (activeSection !== 'audio') return undefined;
-    const synthesis = window.speechSynthesis;
-    if (!synthesis || typeof window.SpeechSynthesisUtterance === 'undefined') {
-      setAudioSupported(false);
-      setAvailableArabicVoices([]);
-      return undefined;
-    }
-
-    setAudioSupported(true);
-    const refreshVoices = () => {
-      const voices = getArabicVoices();
-      setAvailableArabicVoices(voices);
-
-      const savedVoiceId = getSelectedVoiceId();
-      if (savedVoiceId && voices.length && !voices.some((voice) => getVoiceId(voice) === savedVoiceId)) {
-        try {
-          saveSelectedVoiceId(null);
-          setAudioSettingsMessage('تم تحديث قائمة أصوات الجهاز؛ اختر صوتًا متاحًا أو اترك الاختيار تلقائيًا.');
-        } catch (error) {
-          console.error('[TTS] Could not reset an unavailable saved voice:', error);
-          setAudioSettingsMessage('تعذر تحديث تفضيل الصوت على هذا الجهاز.');
-        }
-        setSelectedVoiceId('auto');
-      } else {
-        setSelectedVoiceId(savedVoiceId || 'auto');
-      }
-    };
-
-    refreshVoices();
-    synthesis.addEventListener('voiceschanged', refreshVoices);
-    return () => synthesis.removeEventListener('voiceschanged', refreshVoices);
+    let active = true;
+    setAudioSupported(
+      typeof window.speechSynthesis !== 'undefined'
+        && typeof window.SpeechSynthesisUtterance !== 'undefined'
+    );
+    setAudioVoiceInfo(null);
+    setAudioVoiceError('');
+    getArabicVoiceInfo()
+      .then((voiceInfo) => {
+        if (active) setAudioVoiceInfo(voiceInfo);
+      })
+      .catch((error) => {
+        console.error('[TTS] Could not find an Arabic voice:', error);
+        if (active) setAudioVoiceError(error?.message || 'تعذر العثور على صوت عربي في هذا الجهاز.');
+      });
+    return () => { active = false; };
   }, [activeSection]);
 
   // تهيئة تدفق الصوت وبدء الاستماع بعد تفاعل المستخدم
@@ -392,7 +371,14 @@ export default function Home() {
       },
       onAudioError: (error) => {
         console.error('[Page] Audio error:', error);
-        if (error?.message?.startsWith('تعذر تشغيل الرد الصوتي')) {
+        if (
+          error?.message?.startsWith('تعذر تشغيل الرد الصوتي') ||
+          error?.message?.startsWith('تعذر نطق الرد') ||
+          error?.message?.startsWith('لم يعثر الجهاز على صوت عربي محلي') ||
+          error?.message?.startsWith('النطق الصوتي غير مدعوم') ||
+          error?.message?.startsWith('واجهة النطق الصوتي غير متاحة') ||
+          error?.message?.startsWith('لم يسمح النظام بتشغيل النطق')
+        ) {
           setAudioPlaybackError(error.message);
         } else if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(error?.name)) {
           setAudioPlaybackError('لم يُسمح باستخدام الميكروفون. اسمح بالوصول إليه من إعدادات الموقع أو التطبيق ثم أعد المحاولة.');
@@ -612,13 +598,12 @@ export default function Home() {
       await clearAllLocalData();
       localStorage.removeItem(PROFILE_STORAGE_KEY);
       localStorage.removeItem(MEMORY_STORAGE_KEY);
-      saveSelectedVoiceId(null);
+      localStorage.removeItem('smart-assistant-voice-id');
       skipProfileSaveRef.current = true;
       setProfile({ ...DEFAULT_PROFILE });
       setSavedMemories([]);
       setMemoryDraft('');
       setMemoryError('');
-      setSelectedVoiceId('auto');
       setDeleteConfirmationOpen(false);
       setPrivacyMessage('تم حذف بياناتك المحلية المحددة.');
     } catch (error) {
@@ -1228,69 +1213,35 @@ export default function Home() {
                 ) : activeSection === 'audio' ? (
                   <div className="space-y-5">
                     <div>
-                      <h2 className="text-base font-semibold text-text-primary">اختيار صوت المساعد</h2>
+                      <h2 className="text-base font-semibold text-text-primary">صوت المساعد</h2>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        اختر صوتًا عربيًا من الأصوات المثبتة على جهازك، واستمع إلى عينة قبل اختياره. لا يحتاج النطق إلى اتصال بالإنترنت.
+                        يُنطق الرد باستخدام أفضل صوت عربي متاح محليًا على هذا الجهاز، دون إرسال نص الرد لخدمة صوت خارجية.
                       </p>
                     </div>
 
                     {!audioSupported ? (
                       <p role="alert" className="rounded-lg border border-base-border bg-base-card p-3 text-sm leading-6 text-text-secondary">
-                        ميزة النطق غير مدعومة في هذا المتصفح.
+                        النطق الصوتي غير مدعوم في هذا المتصفح أو التطبيق.
                       </p>
                     ) : (
                       <>
-                        <label className="block space-y-2">
-                          <span className="text-sm text-text-primary">صوت النطق</span>
-                          <select
-                            value={selectedVoiceId}
-                            onChange={(event) => {
-                              const voiceId = event.target.value;
-                              try {
-                                saveSelectedVoiceId(voiceId === 'auto' ? null : voiceId);
-                                setSelectedVoiceId(voiceId);
-                                setAudioSettingsMessage('تم حفظ اختيار الصوت على هذا الجهاز.');
-                              } catch (error) {
-                                console.error('[TTS] Could not save the selected voice:', error);
-                                setAudioSettingsMessage('تعذر حفظ اختيار الصوت على هذا الجهاز.');
-                              }
-                            }}
-                            className="h-11 w-full rounded-lg border border-base-border bg-base-card px-3 text-right text-sm text-text-primary focus:border-gold"
-                          >
-                            <option value="auto">تلقائي — صوت عربي متاح</option>
-                            {selectedVoiceId !== 'auto' &&
-                              !availableArabicVoices.some((voice) => getVoiceId(voice) === selectedVoiceId) && (
-                                <option value={selectedVoiceId} disabled>
-                                  الصوت المحفوظ غير متاح — سيُستخدم صوت الجهاز تلقائيًا
-                                </option>
-                              )}
-                            {availableArabicVoices.map((voice) => (
-                              <option key={getVoiceId(voice)} value={getVoiceId(voice)}>
-                                {voice.name} ({voice.lang})
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-
+                        {audioVoiceInfo ? (
+                          <p className="text-xs leading-5 text-text-secondary">
+                            الصوت المختار تلقائيًا: {audioVoiceInfo.name} ({audioVoiceInfo.language})
+                            — محلي على الجهاز
+                          </p>
+                        ) : audioVoiceError ? (
+                          <p role="alert" className="text-xs leading-5 text-text-secondary">
+                            {audioVoiceError}
+                          </p>
+                        ) : (
+                          <p className="text-xs leading-5 text-text-secondary">
+                            جارٍ فحص الأصوات العربية المتاحة...
+                          </p>
+                        )}
                         <button
                           type="button"
-                          onClick={() => {
-                            const voices = getArabicVoices();
-                            setAvailableArabicVoices(voices);
-                            setAudioSettingsMessage(
-                              voices.length
-                                ? `تم العثور على ${voices.length} صوت عربي على هذا الجهاز.`
-                                : 'لم تظهر أصوات عربية؛ تحقق من تثبيت صوت عربي في إعدادات الجهاز ثم أعد المحاولة.'
-                            );
-                          }}
-                          className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-card hover:text-text-primary"
-                        >
-                          تحديث قائمة الأصوات
-                        </button>
-
-                        <button
-                          type="button"
-                          disabled={audioPreviewing}
+                          disabled={audioPreviewing || !audioVoiceInfo}
                           onClick={async () => {
                             const audioFlow = audioFlowRef.current;
                             if (audioFlow?.isProcessing) {
@@ -1305,17 +1256,13 @@ export default function Home() {
                             setAudioSettingsMessage('');
                             if (resumeListening) audioFlow.vad.pause();
                             try {
-                              const played = await speak('مرحبًا، أنا مساعدك الشخصي. كيف أقدر أساعدك اليوم؟', {
-                                voiceId: selectedVoiceId === 'auto' ? null : selectedVoiceId,
-                                rate: 1.04,
-                                pitch: 1.06,
-                              });
+                              const played = await speak('مرحبًا، أنا مساعدك الشخصي. كيف أقدر أساعدك اليوم؟');
                               if (!played) {
-                                setAudioSettingsMessage('تعذر تشغيل العينة. تحقق من وجود صوت مثبت على الجهاز، أو اختر صوتًا آخر.');
+                                setAudioSettingsMessage('تعذر تشغيل العينة الصوتية.');
                               }
                             } catch (error) {
                               console.error('[TTS] Voice preview failed:', error);
-                              setAudioSettingsMessage(error?.message || 'تعذر تشغيل عينة الصوت على هذا الجهاز.');
+                              setAudioSettingsMessage(error?.message || 'تعذر تشغيل عينة الصوت.');
                             } finally {
                               if (resumeListening && audioFlow.vad?.isRunning) {
                                 audioFlow.vad.resume();
@@ -1328,13 +1275,8 @@ export default function Home() {
                           {audioPreviewing ? 'جارٍ تشغيل العينة...' : 'استمع إلى عينة'}
                         </button>
 
-                        {availableArabicVoices.length === 0 && (
-                          <p className="rounded-lg border border-base-border bg-base-card p-3 text-xs leading-5 text-text-secondary">
-                            لم يوفّر الجهاز أصواتًا عربية بعد. قد تتأخر القائمة قليلًا؛ أعد تحديثها أو ثبّت صوتًا عربيًا من إعدادات تحويل النص إلى كلام في الجهاز. سيُستخدم صوت الجهاز الافتراضي عند الاختيار التلقائي.
-                          </p>
-                        )}
                         <p className="text-xs leading-5 text-text-secondary">
-                          يُحوّل الجهاز الرد إلى كلام محليًا باستخدام محرك النطق والأصوات المثبتة فيه؛ لا يُرسل النص إلى خدمة صوت خارجية. إنشاء رد المساعد نفسه يحتاج اتصالًا بالإنترنت.
+                          قد يختلف اسم الصوت وجودته بين الأجهزة بحسب الأصوات المثبّتة فيها. إذا لم يظهر صوت عربي، ثبّت صوتًا عربيًا من إعدادات النظام ثم أعد فتح التطبيق.
                         </p>
                         {audioSettingsMessage && (
                           <p role="status" className="text-xs text-text-secondary">{audioSettingsMessage}</p>
@@ -1357,7 +1299,7 @@ export default function Home() {
                             ? 'التخزين محلي، لكن النظام لم يضمن الاحتفاظ به عند انخفاض مساحة الجهاز. احتفظ بنسخة احتياطية إذا كانت البيانات مهمة.'
                             : 'التخزين محلي؛ هذا المتصفح لا يوفّر حماية إضافية من إزالة البيانات عند انخفاض مساحة الجهاز.'}
                       </p>
-                      <p className="mt-2">تُرسل الرسائل النصية والتسجيلات الصوتية إلى Groq للمعالجة وتوليد الرد. إذا تعذّر Groq، قد يُرسل نص الطلب إلى OpenRouter كبديل لتوليد الردود النصية؛ لا تُرسل الملاحظات أو المهام أو الذكريات المحلية.</p>
+                      <p className="mt-2">تُرسل الرسائل النصية والتسجيلات الصوتية إلى Groq للمعالجة وتوليد الرد. إذا تعذّر Groq، قد يُرسل نص الطلب إلى OpenRouter كبديل لتوليد الردود النصية؛ لا تُرسل الملاحظات أو المهام أو الذكريات المحلية. يُنطق رد المساعد بصوت عربي محلي من الجهاز، ولا يُرسل النص إلى خدمة صوت خارجية.</p>
                       <p className="mt-2">عند تأكيد فتح مسودة WhatsApp أو X، يُشارك الرقم ونص المسودة مع الخدمة الخارجية لفتحها؛ لا يتم الإرسال أو النشر إلا بضغطك داخل التطبيق نفسه.</p>
                     </div>
 
