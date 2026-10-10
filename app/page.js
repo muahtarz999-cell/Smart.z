@@ -5,6 +5,11 @@ import AssistantOrb from '../components/AssistantOrb';
 import LocalDataPanel from '../components/LocalDataPanel';
 import WhatsAppClusterConnection from '../components/WhatsAppClusterConnection';
 import { AudioFlowManager } from '../lib/audio-flow';
+import {
+  openInstalledApp,
+  openTweetComposer,
+  openWhatsAppChat,
+} from '../lib/native-apps';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import {
   clearAllLocalData,
@@ -36,18 +41,8 @@ const MENU_SECTIONS = [
   { id: 'privacy', label: 'الخصوصية والبيانات' },
 ];
 
-const SUPPORTED_APPS = [
-  { id: 'whatsapp', name: 'WhatsApp' },
-  { id: 'google-calendar', name: 'Google Calendar' },
-  { id: 'gmail', name: 'Gmail' },
-  { id: 'outlook', name: 'Microsoft Outlook' },
-  { id: 'telegram', name: 'Telegram' },
-];
-
 const PROFILE_STORAGE_KEY = 'smart-assistant-profile';
-const PRIVACY_STORAGE_KEY = 'smart-assistant-privacy-enabled';
 const MEMORY_STORAGE_KEY = 'smart-assistant-memories';
-const LOCATION_SHARING_STORAGE_KEY = 'smart-assistant-location-sharing';
 const DEFAULT_PROFILE = {
   name: '',
   responseStyle: 'medium',
@@ -93,15 +88,9 @@ export default function Home() {
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeSection, setActiveSection] = useState(null);
-  const [locationSharing, setLocationSharing] = useState(false);
-  const [locationSharingLoaded, setLocationSharingLoaded] = useState(false);
-  const [appPickerOpen, setAppPickerOpen] = useState(false);
-  const [selectedApps, setSelectedApps] = useState([]);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [profileSaveNotice, setProfileSaveNotice] = useState('');
-  const [privacyEnabled, setPrivacyEnabled] = useState(true);
-  const [privacyLoaded, setPrivacyLoaded] = useState(false);
   const [savedMemories, setSavedMemories] = useState([]);
   const [memoriesLoaded, setMemoriesLoaded] = useState(false);
   const [memoryDraft, setMemoryDraft] = useState('');
@@ -112,6 +101,10 @@ export default function Home() {
   const [authSession, setAuthSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
   const [customerAccess, setCustomerAccess] = useState({ status: 'checking', message: '' });
+  const [localStorageStatus, setLocalStorageStatus] = useState({
+    persistent: false,
+    persistenceSupported: false,
+  });
   const [authPanelOpen, setAuthPanelOpen] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -123,6 +116,10 @@ export default function Home() {
   const [whatsappConnectionLoading, setWhatsappConnectionLoading] = useState(false);
   const [whatsappError, setWhatsappError] = useState('');
   const [whatsappMetaConnection, setWhatsappMetaConnection] = useState(null);
+  const [externalAppMessage, setExternalAppMessage] = useState('');
+  const [whatsappDraftPhone, setWhatsappDraftPhone] = useState('');
+  const [whatsappDraftText, setWhatsappDraftText] = useState('');
+  const [tweetDraftText, setTweetDraftText] = useState('');
   const [message, setMessage] = useState('');
   const [reply, setReply] = useState('');
   const [loading, setLoading] = useState(false);
@@ -131,6 +128,7 @@ export default function Home() {
   const [audioSettingsMessage, setAudioSettingsMessage] = useState('');
   const [audioPreviewing, setAudioPreviewing] = useState(false);
   const [audioSupported, setAudioSupported] = useState(true);
+  const [audioPlaybackError, setAudioPlaybackError] = useState('');
   const [orbState, setOrbState] = useState('idle');
   const audioFlowRef = useRef(null);
   const [customerDataUserId, setCustomerDataUserId] = useState(null);
@@ -199,15 +197,15 @@ export default function Home() {
         const result = await response.json();
         if (!active) return;
         if (response.ok && result.active === true && result.user?.id === authUser.id) {
-          const customerDataChanged = await prepareCustomerLocalData(authUser.id);
+          const localWorkspace = await prepareCustomerLocalData(authUser.id);
           if (!active) return;
-          if (customerDataChanged) {
+          setLocalStorageStatus({
+            persistent: localWorkspace.persistent,
+            persistenceSupported: localWorkspace.persistenceSupported,
+          });
+          if (localWorkspace.changed) {
             setProfile({ ...DEFAULT_PROFILE });
             setProfileLoaded(false);
-            setPrivacyEnabled(true);
-            setPrivacyLoaded(false);
-            setLocationSharing(false);
-            setLocationSharingLoaded(false);
             setSavedMemories([]);
             setMemoriesLoaded(false);
             setSelectedVoiceId('auto');
@@ -308,47 +306,6 @@ export default function Home() {
 
   useEffect(() => {
     if (!customerDataReady) return undefined;
-    try {
-      const savedPrivacy = localStorage.getItem(PRIVACY_STORAGE_KEY);
-      if (savedPrivacy === 'false') setPrivacyEnabled(false);
-    } catch (error) {
-      console.warn('[Privacy] Could not load saved setting:', error);
-    } finally {
-      setPrivacyLoaded(true);
-    }
-  }, [customerDataReady]);
-
-  useEffect(() => {
-    if (!customerDataReady || !privacyLoaded) return;
-    try {
-      localStorage.setItem(PRIVACY_STORAGE_KEY, String(privacyEnabled));
-    } catch (error) {
-      console.warn('[Privacy] Could not save setting locally:', error);
-    }
-  }, [customerDataReady, privacyEnabled, privacyLoaded]);
-
-  useEffect(() => {
-    if (!customerDataReady) return undefined;
-    try {
-      setLocationSharing(localStorage.getItem(LOCATION_SHARING_STORAGE_KEY) === 'true');
-    } catch (error) {
-      console.warn('[Location sharing] Could not load saved setting:', error);
-    } finally {
-      setLocationSharingLoaded(true);
-    }
-  }, [customerDataReady]);
-
-  useEffect(() => {
-    if (!customerDataReady || !locationSharingLoaded) return;
-    try {
-      localStorage.setItem(LOCATION_SHARING_STORAGE_KEY, String(locationSharing));
-    } catch (error) {
-      console.warn('[Location sharing] Could not save setting locally:', error);
-    }
-  }, [customerDataReady, locationSharing, locationSharingLoaded]);
-
-  useEffect(() => {
-    if (!customerDataReady) return undefined;
     let active = true;
     migrateLegacyMemories(MEMORY_STORAGE_KEY)
       .then(() => listLocalRecords('memories'))
@@ -383,8 +340,7 @@ export default function Home() {
 
   useEffect(() => {
     if (activeSection !== 'audio') return undefined;
-    const synthesis = window.speechSynthesis;
-    if (!synthesis) {
+    if (typeof window.Audio === 'undefined') {
       setAudioSupported(false);
       setAvailableArabicVoices([]);
       return undefined;
@@ -392,10 +348,8 @@ export default function Home() {
 
     setAudioSupported(true);
     setSelectedVoiceId(getSelectedVoiceId() || 'auto');
-    const refreshVoices = () => setAvailableArabicVoices(getArabicVoices());
-    refreshVoices();
-    synthesis.addEventListener('voiceschanged', refreshVoices);
-    return () => synthesis.removeEventListener('voiceschanged', refreshVoices);
+    setAvailableArabicVoices(getArabicVoices());
+    return undefined;
   }, [activeSection]);
 
   // ابدأ AudioFlow عند تحميل المكوّن
@@ -406,6 +360,7 @@ export default function Home() {
 
     const initAudioFlow = async () => {
       audioFlow = new AudioFlowManager({
+        cacheNamespace: authUser.id,
         getAccessToken: async () => {
           const { data, error } = await supabase.auth.getSession();
           return error ? null : data.session?.access_token ?? null;
@@ -416,6 +371,10 @@ export default function Home() {
         },
         onReply: (text) => {
           setReply(text);
+          setAudioPlaybackError('');
+        },
+        onAudioError: (error) => {
+          setAudioPlaybackError(error?.message || 'تعذر إنشاء الرد الصوتي. تحقق من الاتصال وحاول مجددًا.');
         },
       });
 
@@ -621,12 +580,10 @@ export default function Home() {
     try {
       await clearAllLocalData();
       localStorage.removeItem(PROFILE_STORAGE_KEY);
-      localStorage.removeItem(PRIVACY_STORAGE_KEY);
       localStorage.removeItem(MEMORY_STORAGE_KEY);
       saveSelectedVoiceId(null);
       skipProfileSaveRef.current = true;
       setProfile({ ...DEFAULT_PROFILE });
-      setPrivacyEnabled(true);
       setSavedMemories([]);
       setMemoryDraft('');
       setMemoryError('');
@@ -662,6 +619,47 @@ export default function Home() {
     } catch (error) {
       console.error('[Learning] Could not delete saved memory:', error);
       setMemoryError('تعذر حذف الذاكرة من هذا الجهاز.');
+    }
+  }
+
+  async function launchExternalApp(appId) {
+    setExternalAppMessage('');
+    try {
+      await openInstalledApp(appId);
+    } catch (error) {
+      console.error('[Apps] Could not open the requested app:', error);
+      setExternalAppMessage(error?.message || 'تعذر فتح التطبيق المطلوب.');
+    }
+  }
+
+  async function launchWhatsAppDraft() {
+    const phone = whatsappDraftPhone.replace(/\D/g, '');
+    const text = whatsappDraftText.trim();
+    if (!text || !window.confirm(
+      `سيتم فتح WhatsApp بالرسالة التالية إلى ${phone || 'الرقم المحدد'}.\nلن تُرسل الرسالة إلا إذا ضغطت «إرسال» داخل WhatsApp.\n\n${text}`
+    )) return;
+
+    setExternalAppMessage('');
+    try {
+      await openWhatsAppChat(phone, text);
+    } catch (error) {
+      console.error('[Apps] Could not open WhatsApp message draft:', error);
+      setExternalAppMessage(error?.message || 'تعذر فتح مسودة رسالة WhatsApp.');
+    }
+  }
+
+  async function launchTweetDraft() {
+    const text = tweetDraftText.trim();
+    if (!text || !window.confirm(
+      `سيتم فتح مسودة التغريدة في X. لن تُنشر إلا إذا ضغطت «نشر» داخل X.\n\n${text}`
+    )) return;
+
+    setExternalAppMessage('');
+    try {
+      await openTweetComposer(text);
+    } catch (error) {
+      console.error('[Apps] Could not open X post draft:', error);
+      setExternalAppMessage(error?.message || 'تعذر فتح مسودة التغريدة.');
     }
   }
 
@@ -717,6 +715,11 @@ export default function Home() {
                 <p className="text-text-secondary text-xs mt-1 text-center">
                   {reply || 'قل لي بماذا أساعدك'}
                 </p>
+                {audioPlaybackError && (
+                  <p role="status" className="mt-2 max-w-xs text-center text-xs leading-5 text-amber-300">
+                    {audioPlaybackError}
+                  </p>
+                )}
               </div>
 
               {/* شريط الإدخال */}
@@ -1005,19 +1008,6 @@ export default function Home() {
                             )}
                           </div>
                         </li>
-                        {selectedApps.map((appId) => {
-                          const app = SUPPORTED_APPS.find((supportedApp) => supportedApp.id === appId);
-                          if (!app || appId === 'whatsapp') return null;
-                          return (
-                            <li key={app.id} className="flex min-h-16 items-center gap-3 rounded-lg border border-base-border bg-base-card px-3 py-3">
-                              <span className="flex w-7 justify-center" aria-hidden="true">
-                                <span className="h-3 w-3 rounded-full border border-gold/45 bg-gold/20 shadow-[inset_0_0_5px_rgba(201,168,104,0.18)]" />
-                              </span>
-                              <span className="min-w-0 flex-1 text-sm text-text-primary">{app.name}</span>
-                              <span className="text-xs text-text-secondary">غير مرتبط</span>
-                            </li>
-                          );
-                        })}
                       </ul>
                       <p className="text-xs leading-5 text-text-secondary">
                         تُعالج الرسائل النصية الواردة عبر Meta ومزوّد المساعد Groq دون حفظ سجل محادثات في قاعدة بيانات Smart.z؛ تنطبق سياسات معالجة البيانات الخاصة بكل مزوّد.
@@ -1026,6 +1016,88 @@ export default function Home() {
                         authSession={authSession}
                         customerAccess={customerAccess}
                       />
+                      <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">
+                        <h3 className="text-sm font-medium text-text-primary">فتح تطبيق على الهاتف</h3>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => launchExternalApp('whatsapp')}
+                            className="min-h-10 rounded-lg border border-base-border px-3 text-sm text-text-primary hover:bg-base-panel"
+                          >
+                            فتح WhatsApp
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => launchExternalApp('x')}
+                            className="min-h-10 rounded-lg border border-base-border px-3 text-sm text-text-primary hover:bg-base-panel"
+                          >
+                            فتح X
+                          </button>
+                        </div>
+                        <div className="space-y-3 border-t border-base-border pt-3">
+                          <h4 className="text-xs font-medium text-text-primary">تجهيز رسالة WhatsApp</h4>
+                          <label className="block space-y-1.5">
+                            <span className="text-xs text-text-secondary">رقم المستلم مع رمز الدولة</span>
+                            <input
+                              type="tel"
+                              inputMode="numeric"
+                              autoComplete="tel"
+                              value={whatsappDraftPhone}
+                              onChange={(event) => setWhatsappDraftPhone(event.target.value)}
+                              placeholder="9665xxxxxxxx"
+                              maxLength={20}
+                              className="h-10 w-full rounded-lg border border-base-border bg-base-panel px-3 text-right text-sm text-text-primary"
+                            />
+                          </label>
+                          <label className="block space-y-1.5">
+                            <span className="text-xs text-text-secondary">نص الرسالة</span>
+                            <textarea
+                              value={whatsappDraftText}
+                              onChange={(event) => setWhatsappDraftText(event.target.value)}
+                              maxLength={4096}
+                              rows={3}
+                              className="w-full rounded-lg border border-base-border bg-base-panel px-3 py-2 text-right text-sm text-text-primary"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            disabled={!whatsappDraftPhone.trim() || !whatsappDraftText.trim()}
+                            onClick={launchWhatsAppDraft}
+                            className="min-h-10 w-full rounded-lg border border-gold/40 px-3 text-sm text-gold hover:bg-gold/10 disabled:opacity-50"
+                          >
+                            مراجعة الرسالة وفتح WhatsApp
+                          </button>
+                        </div>
+                        <div className="space-y-3 border-t border-base-border pt-3">
+                          <h4 className="text-xs font-medium text-text-primary">تجهيز تغريدة</h4>
+                          <label className="block space-y-1.5">
+                            <span className="text-xs text-text-secondary">نص التغريدة · {Array.from(tweetDraftText).length}/280</span>
+                            <textarea
+                              value={tweetDraftText}
+                              onChange={(event) => setTweetDraftText(event.target.value)}
+                              maxLength={280}
+                              rows={3}
+                              className="w-full rounded-lg border border-base-border bg-base-panel px-3 py-2 text-right text-sm text-text-primary"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            disabled={!tweetDraftText.trim()}
+                            onClick={launchTweetDraft}
+                            className="min-h-10 w-full rounded-lg border border-gold/40 px-3 text-sm text-gold hover:bg-gold/10 disabled:opacity-50"
+                          >
+                            مراجعة التغريدة وفتح X
+                          </button>
+                        </div>
+                        <p className="text-xs leading-5 text-text-secondary">
+                          لا يرسل Smart.z الرسائل أو ينشر التغريدات بنفسه. بعد مراجعتك وموافقتك يفتح مسودة في التطبيق؛ الإرسال أو النشر النهائي يبقى بيدك داخل التطبيق الخارجي.
+                        </p>
+                        {externalAppMessage && (
+                          <p role="status" className="text-xs leading-5 text-amber-300">
+                            {externalAppMessage}
+                          </p>
+                        )}
+                      </div>
                       {whatsappError && (
                         <p role="alert" className="rounded-lg border border-gold/20 bg-gold/5 px-3 py-2 text-xs leading-5 text-text-secondary">
                           {whatsappError}
@@ -1034,56 +1106,21 @@ export default function Home() {
                       {!authUser && authReady && (
                         <p className="text-xs text-text-secondary">سجّل الدخول لربط WhatsApp بحسابك.</p>
                       )}
-
-                      <button
-                        type="button"
-                        aria-expanded={appPickerOpen}
-                        aria-controls="supported-app-picker"
-                        onClick={() => setAppPickerOpen((open) => !open)}
-                        className="min-h-10 w-full rounded-lg border border-base-border px-3 text-sm text-text-secondary hover:bg-base-card hover:text-text-primary"
-                      >
-                        + إضافة تطبيق
-                      </button>
                     </div>
-
-                    {appPickerOpen && (
-                      <div id="supported-app-picker" className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
-                        <h3 className="text-sm font-medium text-text-primary">التطبيقات المدعومة</h3>
-                        <ul className="space-y-1">
-                          {SUPPORTED_APPS.map((app) => {
-                            const isAdded = app.id === 'whatsapp' || selectedApps.includes(app.id);
-                            return (
-                              <li key={app.id}>
-                                <button
-                                  type="button"
-                                  disabled={isAdded}
-                                  onClick={() => setSelectedApps((current) => [...current, app.id])}
-                                  className="flex min-h-10 w-full items-center gap-3 rounded-md px-2 text-right text-sm text-text-primary hover:bg-base-panel disabled:text-text-secondary"
-                                >
-                                  <span className="flex w-6 justify-center" aria-hidden="true">
-                                    <span className="h-2.5 w-2.5 rounded-full border border-gold/45 bg-gold/20" />
-                                  </span>
-                                  <span className="flex-1">{app.name}</span>
-                                  {isAdded && <span className="text-xs text-text-secondary">مضاف</span>}
-                                </button>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    )}
 
                     <aside className="rounded-lg border border-gold/20 bg-gold/5 p-3 text-xs leading-5 text-text-secondary">
                       <p className="font-medium text-text-primary">قبل ربط أي تطبيق</p>
                       <p className="mt-1">قد يطلب التطبيق صلاحيات للوصول إلى بياناتك. راجع الصلاحيات والبيانات التي ستتم مشاركتها، واسأل عن استخدامها في الذاكرة قبل الموافقة.</p>
-                      <p className="mt-2 text-gold/80">لا يبدأ ربط WhatsApp إلا بعد موافقتك في نافذة Meta؛ التطبيقات الأخرى غير مرتبطة حاليًا.</p>
+                      <p className="mt-2 text-gold/80">المتاح حاليًا هو ربط WhatsApp عبر Meta أو جلسة WhatsApp Web، وفتح WhatsApp أو X من حاوية Capacitor. نسخة PWA لا تستطيع تشغيل تطبيقات الهاتف؛ أما إرسال رسالة أو نشر تغريدة نيابة عنك فيحتاج API رسميًا وتأكيدًا منفصلًا على الإجراء.</p>
                     </aside>
                   </div>
                 ) : activeSection === 'learning' ? (
                   <div className="space-y-5">
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">التعلم والتخصيص</h2>
-                      <p className="mt-1 text-xs text-text-secondary">الذاكرة المحفوظة على هذا الجهاز فقط؛ لا تتم مزامنتها مع الخادم.</p>
+                      <p className="mt-1 text-xs leading-5 text-text-secondary">
+                        حاليًا يمكنك إضافة ذكريات يدويًا وحفظها محليًا؛ لا يتعلم النموذج منها تلقائيًا ولا تُرسل إلى Groq.
+                      </p>
                     </div>
 
                     <form onSubmit={saveMemory} className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
@@ -1148,7 +1185,7 @@ export default function Home() {
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">اختيار صوت المساعد</h2>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        اختر صوتًا عربيًا متاحًا على جهازك، ثم استمع إلى عينة قبل اعتماده.
+                        اختر صوتًا عربيًا من Groq واستمع إلى عينة. يُحفظ الصوت المُنشأ على هذا الجهاز لإعادة تشغيله عند تكرار الرد.
                       </p>
                     </div>
 
@@ -1175,11 +1212,11 @@ export default function Home() {
                             }}
                             className="h-11 w-full rounded-lg border border-base-border bg-base-card px-3 text-right text-sm text-text-primary focus:border-gold"
                           >
-                            <option value="auto">تلقائي — صوت الجهاز</option>
+                            <option value="auto">تلقائي — نورة</option>
                             {selectedVoiceId !== 'auto' &&
                               !availableArabicVoices.some((voice) => getVoiceId(voice) === selectedVoiceId) && (
                                 <option value={selectedVoiceId} disabled>
-                                  الصوت المحفوظ غير متاح — سيُستخدم الصوت التلقائي
+                                  الصوت المحفوظ غير متاح — ستُستخدم نورة تلقائيًا
                                 </option>
                               )}
                             {availableArabicVoices.map((voice) => (
@@ -1193,13 +1230,8 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={() => {
-                            const voices = getArabicVoices();
-                            setAvailableArabicVoices(voices);
-                            setAudioSettingsMessage(
-                              voices.length
-                                ? `تم العثور على ${voices.length} صوت عربي.`
-                                : 'لم يعثر الجهاز على أصوات عربية متاحة حاليًا.'
-                            );
+                            setAvailableArabicVoices(getArabicVoices());
+                            setAudioSettingsMessage('تم تحديث قائمة أصوات Groq العربية.');
                           }}
                           className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-card hover:text-text-primary"
                         >
@@ -1215,10 +1247,10 @@ export default function Home() {
                             try {
                               const played = await speak('مرحبًا، أنا مساعدك الشخصي. كيف أقدر أساعدك اليوم؟', {
                                 voiceId: selectedVoiceId === 'auto' ? null : selectedVoiceId,
-                                rate: 1.04,
-                                pitch: 1.06,
+                                accessToken: authSession?.access_token,
+                                cacheNamespace: authUser?.id,
                               });
-                              if (!played) setAudioSettingsMessage('تعذر تشغيل العينة. جرّب تحديث الأصوات أو اختيار صوت آخر.');
+                              if (!played) setAudioSettingsMessage('تعذر تشغيل العينة. تحقق من الاتصال وحاول مرة أخرى.');
                             } catch (error) {
                               console.error('[TTS] Voice preview failed:', error);
                               setAudioSettingsMessage('تعذر تشغيل عينة الصوت.');
@@ -1233,11 +1265,11 @@ export default function Home() {
 
                         {availableArabicVoices.length === 0 && (
                           <p className="rounded-lg border border-base-border bg-base-card p-3 text-xs leading-5 text-text-secondary">
-                            لم تظهر أصوات عربية بعد. قد تختلف القائمة حسب الجهاز والمتصفح؛ على iPhone تحقق من تنزيل صوت عربي في إعدادات «المحتوى المنطوق»، ثم أعد فتح هذه القائمة.
+                            تعذر تحميل خيارات الصوت. أعد فتح الإعدادات وحاول مرة أخرى.
                           </p>
                         )}
                         <p className="text-xs leading-5 text-text-secondary">
-                          الأصوات هنا من جهازك ولا تستخدم Google. توفر الصوت العربي ونبرته يختلفان بين الأجهزة، وقد لا يوضح النظام إن كان الصوت نسائيًا.
+                          يُرسل نص الرد إلى Groq لإنشاء الصوت، ويتطلب إنشاء رد جديد اتصالًا بالإنترنت. تُخزّن المقاطع على الجهاز (حتى 5 MB) وتعمل دون اتصال عند تكرار النص والصوت نفسيهما؛ لا يحتاج تشغيلها إلى Chrome أو إذن الميكروفون.
                         </p>
                         {audioSettingsMessage && (
                           <p role="status" className="text-xs text-text-secondary">{audioSettingsMessage}</p>
@@ -1251,37 +1283,24 @@ export default function Home() {
                       <h2 className="text-base font-semibold text-text-primary">الخصوصية والبيانات</h2>
                       <p className="mt-1 text-xs text-text-secondary">إعداد محفوظ على هذا الجهاز فقط.</p>
                     </div>
-
-                    <div className="flex min-h-12 items-center gap-3 rounded-lg border border-base-border bg-base-card px-3">
-                      <span className="flex w-7 justify-center" aria-hidden="true">
-                        <span className="h-3 w-3 rounded-full border border-gold/45 bg-gold/20 shadow-[inset_0_0_5px_rgba(201,168,104,0.18)]" />
-                      </span>
-                      <span className="text-sm text-text-primary">الخصوصية والبيانات</span>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={privacyEnabled}
-                        aria-label="الخصوصية والبيانات"
-                        onClick={() => setPrivacyEnabled((enabled) => !enabled)}
-                        className={`mr-auto flex h-8 min-w-[76px] items-center justify-between rounded-full border px-2 text-xs transition-colors ${
-                          privacyEnabled
-                            ? 'border-gold/60 bg-gold/10 text-gold'
-                            : 'border-base-border bg-base-panel text-text-secondary'
-                        }`}
-                      >
-                        <span>{privacyEnabled ? 'نعم' : 'لا'}</span>
-                        <span
-                          aria-hidden="true"
-                          className={`h-2.5 w-2.5 rounded-full ${privacyEnabled ? 'bg-gold/70' : 'bg-text-secondary'}`}
-                        />
-                      </button>
+                    <div className="rounded-lg border border-base-border bg-base-card p-3 text-xs leading-5 text-text-secondary">
+                      <p>تُخزّن الذاكرة والملاحظات والمهام وسجل المحادثة في IndexedDB على هذا الجهاز، ولا يزامنها Smart.z إلى خادم. Android مضبوط لتعطيل النسخ الاحتياطي للتطبيق؛ وقد تنطبق سياسات النسخ الاحتياطي العامة للجهاز على iPhone.</p>
+                      <p className="mt-2">
+                        {localStorageStatus.persistent
+                          ? 'حماية التخزين المحلي: فعّالة؛ طلب التطبيق من النظام عدم إزالة البيانات تلقائيًا.'
+                          : localStorageStatus.persistenceSupported
+                            ? 'التخزين محلي، لكن النظام لم يضمن الاحتفاظ به عند انخفاض مساحة الجهاز. احتفظ بنسخة احتياطية إذا كانت البيانات مهمة.'
+                            : 'التخزين محلي؛ هذا المتصفح لا يوفّر حماية إضافية من إزالة البيانات عند انخفاض مساحة الجهاز.'}
+                      </p>
+                      <p className="mt-2">تُرسل الرسائل النصية والتسجيلات الصوتية إلى Groq للمعالجة وتوليد الرد؛ لا تُرسل الملاحظات أو المهام أو الذكريات المحلية.</p>
+                      <p className="mt-2">عند تأكيد فتح مسودة WhatsApp أو X، يُشارك الرقم ونص المسودة مع الخدمة الخارجية لفتحها؛ لا يتم الإرسال أو النشر إلا بضغطك داخل التطبيق نفسه.</p>
                     </div>
 
                     <div className="space-y-3 border-t border-base-border pt-6">
                       <div>
                         <h3 className="text-sm font-medium text-text-primary">حذف البيانات</h3>
                         <p className="mt-1 text-xs leading-5 text-text-secondary">
-                          يحذف الاسم والتفضيلات وسجل المحادثة المحفوظ محليًا على هذا الجهاز فقط.
+                          يحذف الاسم والتفضيلات والذكريات والملاحظات والمهام وسجل المحادثة ومقاطع الصوت المخزنة محليًا على هذا الجهاز فقط.
                         </p>
                       </div>
                       {!deleteConfirmationOpen ? (
@@ -1298,7 +1317,7 @@ export default function Home() {
                       ) : (
                         <div className="space-y-3 rounded-lg border border-base-border bg-base-card p-4" role="alertdialog" aria-label="تأكيد حذف البيانات">
                           <p className="text-sm leading-6 text-text-primary">
-                            هل تريد حذف الاسم والتفضيلات وسجل المحادثة من هذا الجهاز؟ لا يمكن التراجع عن هذا الإجراء.
+                            هل تريد حذف كل البيانات المحلية، بما فيها الذكريات والملاحظات والمهام وسجل المحادثة ومقاطع الصوت؟ لا يمكن التراجع عن هذا الإجراء.
                           </p>
                           <div className="flex flex-wrap gap-2">
                             <button
@@ -1347,32 +1366,6 @@ export default function Home() {
                       </button>
                     </li>
                   ))}
-                  <li>
-                    <div className="flex min-h-12 items-center gap-3 rounded-lg px-3 text-sm text-text-primary">
-                      <span className="flex w-7 justify-center" aria-hidden="true">
-                        <span className="h-3 w-3 rounded-full border border-gold/45 bg-gold/20 shadow-[inset_0_0_5px_rgba(201,168,104,0.18)]" />
-                      </span>
-                      <span>مشاركة الموقع</span>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={locationSharing}
-                        aria-label="مشاركة الموقع"
-                        onClick={() => setLocationSharing((sharing) => !sharing)}
-                        className={`mr-auto flex h-8 min-w-[76px] items-center justify-between rounded-full border px-2 text-xs transition-colors ${
-                          locationSharing
-                            ? 'border-gold bg-gold/15 text-gold'
-                            : 'border-base-border bg-base-card text-text-secondary'
-                        }`}
-                      >
-                        <span>{locationSharing ? 'نعم' : 'لا'}</span>
-                        <span
-                          aria-hidden="true"
-                          className={`h-2.5 w-2.5 rounded-full ${locationSharing ? 'bg-gold' : 'bg-text-secondary'}`}
-                        />
-                      </button>
-                    </div>
-                  </li>
                   {MENU_SECTIONS.slice(3).map((section) => (
                     <li key={section.id}>
                       <button
