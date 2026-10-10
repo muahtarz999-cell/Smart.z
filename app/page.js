@@ -1215,7 +1215,7 @@ export default function Home() {
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">صوت المساعد</h2>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        يُستخدم أفضل صوت عربي محلي متاح، مع أولوية للسعودي ثم الخليجي، وتُستبعد أصوات ar-JO. لا يُرسل نص الرد إلى خدمة صوت خارجية.
+                        يُجرّب Smart.z النطق عبر محرك الجهاز أو المتصفح، مع أولوية للصوت السعودي ثم الخليجي، واستبعاد ar-JO. لا يرسل التطبيق النص إلى خدمة صوت خاصة به؛ يعتمد الاتصال على محرك النطق وإعداداته في الجهاز.
                       </p>
                     </div>
 
@@ -1228,7 +1228,7 @@ export default function Home() {
                         {audioVoiceInfo ? (
                           <p className="text-xs leading-5 text-text-secondary">
                             الصوت المختار تلقائيًا: {audioVoiceInfo.name} ({audioVoiceInfo.language})
-                            — محلي على الجهاز
+                            — {audioVoiceInfo.localService ? 'محلي على الجهاز' : 'مقدّم من محرك الجهاز أو المتصفح'}
                           </p>
                         ) : audioVoiceError ? (
                           <p role="alert" className="text-xs leading-5 text-text-secondary">
@@ -1241,7 +1241,7 @@ export default function Home() {
                         )}
                         <button
                           type="button"
-                          disabled={audioPreviewing || !audioVoiceInfo}
+                          disabled={audioPreviewing}
                           onClick={async () => {
                             const audioFlow = audioFlowRef.current;
                             if (audioFlow?.isProcessing) {
@@ -1256,9 +1256,13 @@ export default function Home() {
                             setAudioSettingsMessage('');
                             if (resumeListening) audioFlow.vad.pause();
                             try {
-                              const played = await speak('مرحبًا، أنا مساعدك الشخصي. كيف أقدر أساعدك اليوم؟');
-                              if (!played) {
-                                setAudioSettingsMessage('تعذر تشغيل العينة الصوتية.');
+                              const played = await speak('مرحبًا، هذا اختبار للصوت العربي.');
+                              if (played) {
+                                setAudioSettingsMessage(
+                                  `نجح تشغيل العينة${audioVoiceInfo?.name ? ` باستخدام ${audioVoiceInfo.name}` : ''}.`
+                                );
+                              } else {
+                                setAudioSettingsMessage('لم تكتمل العينة؛ ربما أوقفها النظام أو المستخدم.');
                               }
                             } catch (error) {
                               console.error('[TTS] Voice preview failed:', error);
@@ -1276,7 +1280,7 @@ export default function Home() {
                         </button>
 
                         <p className="text-xs leading-5 text-text-secondary">
-                          قد يختلف اسم الصوت وجودته بين الأجهزة بحسب الأصوات المثبّتة فيها. إذا لم يظهر صوت عربي، ثبّت صوتًا عربيًا من إعدادات النظام ثم أعد فتح التطبيق.
+                          يعتمد توفر الصوت واتصاله بالإنترنت على محرك النطق المحدد في إعدادات الجهاز. لضمان النطق دون اتصال، ثبّت صوتًا عربيًا محليًا من إعدادات Android.
                         </p>
                         {audioSettingsMessage && (
                           <p role="status" className="text-xs text-text-secondary">{audioSettingsMessage}</p>
