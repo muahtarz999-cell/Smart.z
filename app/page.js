@@ -482,14 +482,14 @@ export default function Home() {
     audioFlowRef.current = audioFlow;
 
     return () => {
-      audioFlow.stop();
+      audioFlow.destroy();
       if (audioFlowRef.current === audioFlow) audioFlowRef.current = null;
     };
   }, [customerAccess.status, authUser?.id]);
 
   async function startAudioListening() {
     const audioFlow = audioFlowRef.current;
-    if (!audioFlow || audioStarting) return;
+    if (!audioFlow || audioStarting || audioFlow.isStarting || audioFlow.isListening) return;
 
     setAudioStarting(true);
     setAudioPlaybackError('');
@@ -501,11 +501,15 @@ export default function Home() {
     }
   }
 
+  function stopAudioListening() {
+    audioFlowRef.current?.stopListening();
+  }
+
   // عند المغادرة، تنظيف الموارد
   useEffect(() => {
     const cleanup = () => {
       if (audioFlowRef.current) {
-        audioFlowRef.current.stop();
+        audioFlowRef.current.destroy();
       }
     };
 
@@ -841,14 +845,33 @@ export default function Home() {
                     {audioPlaybackError}
                   </p>
                 )}
-                {(orbState === 'idle' || orbState === 'error') && (
+                {['idle', 'error', 'ready', 'listening', 'listening-active', 'transcribing', 'thinking', 'speaking', 'paused'].includes(orbState) && (
                   <button
                     type="button"
-                    onClick={startAudioListening}
-                    disabled={audioStarting}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      void startAudioListening();
+                    }}
+                    onPointerUp={stopAudioListening}
+                    onPointerCancel={stopAudioListening}
+                    onLostPointerCapture={stopAudioListening}
+                    onKeyDown={(event) => {
+                      if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
+                        event.preventDefault();
+                        void startAudioListening();
+                      }
+                    }}
+                    onKeyUp={(event) => {
+                      if (event.key === ' ' || event.key === 'Enter') {
+                        event.preventDefault();
+                        stopAudioListening();
+                      }
+                    }}
+                    aria-pressed={orbState === 'listening' || orbState === 'listening-active'}
                     className="mt-4 rounded-lg bg-gold px-4 py-2 text-sm font-semibold text-base-bg disabled:cursor-wait disabled:opacity-60"
                   >
-                    {audioStarting ? 'جارٍ تفعيل الميكروفون...' : 'تفعيل الميكروفون'}
+                    {audioStarting ? 'جارٍ تفعيل الميكروفون...' : 'اضغط باستمرار للتحدث'}
                   </button>
                 )}
               </div>
