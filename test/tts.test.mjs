@@ -6,9 +6,10 @@ import test from 'node:test';
 const source = await readFile(new URL('../lib/tts.js', import.meta.url), 'utf8');
 const testableSource = source.replace(
   "import { Capacitor, registerPlugin } from '@capacitor/core';",
-  "const Capacitor = { isNativePlatform: () => false, isPluginAvailable: () => false, getPlatform: () => 'web' }; const registerPlugin = () => globalThis.__speechEngineSetupMock;"
+  "const Capacitor = { isNativePlatform: () => false, isPluginAvailable: () => false, getPlatform: () => 'web' }; const registerPlugin = () => { globalThis.__registerPluginCalls = (globalThis.__registerPluginCalls || 0) + 1; return globalThis.__speechEngineSetupMock; };"
 );
 const tts = await import(`data:text/javascript;base64,${Buffer.from(testableSource).toString('base64')}`);
+assert.equal(globalThis.__registerPluginCalls || 0, 0, 'server imports must not register native plugins');
 
 function createVoice(lang, options = {}) {
   return {
@@ -26,6 +27,7 @@ function setupSpeechSynthesis(voices, speak) {
   synthesis.speak = speak || (() => {});
   synthesis.cancel = () => {};
   globalThis.window = {
+    Capacitor: {},
     speechSynthesis: synthesis,
     SpeechSynthesisUtterance: class {
       constructor(text) {
@@ -176,7 +178,6 @@ test('uses native Android TTS voices and reports native engine failures', async 
   assert.deepEqual(await nativeTts.getArabicVoiceInfo(), {
     name: 'ar-SA',
     language: 'ar-SA',
-    localService: true,
     native: true,
   });
   const diagnostics = await nativeTts.getSpeechDiagnostics();
@@ -199,7 +200,7 @@ test('uses native Android TTS voices and reports native engine failures', async 
   await assert.rejects(nativeTts.speak('اختبار'), /native-engine-failed/);
   assert.deepEqual(
     await nativeTts.testSpeechPlayback('اختبار'),
-    { success: false, engine: 'android-native', error: 'فشل محرك النطق في android: native-engine-failed.' }
+    { success: false, engine: 'android-native', error: 'تعذر تشغيل النطق الأصلي: native-engine-failed' }
   );
 
   nativePlugin.getSupportedVoices = async () => {
