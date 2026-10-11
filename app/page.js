@@ -18,7 +18,7 @@ import {
   migrateLegacyMemories,
   saveLocalRecord,
 } from '../lib/local-data';
-import { getArabicVoiceInfo, speak } from '../lib/tts';
+import { getArabicVoiceInfo, isSpeechSupported, speak } from '../lib/tts';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import {
   clearWhatsAppSignupState,
@@ -335,10 +335,7 @@ export default function Home() {
   useEffect(() => {
     if (activeSection !== 'audio') return undefined;
     let active = true;
-    setAudioSupported(
-      typeof window.speechSynthesis !== 'undefined'
-        && typeof window.SpeechSynthesisUtterance !== 'undefined'
-    );
+    setAudioSupported(isSpeechSupported());
     setAudioVoiceInfo(null);
     setAudioVoiceError('');
     getArabicVoiceInfo()
