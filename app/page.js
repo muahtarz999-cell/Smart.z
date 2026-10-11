@@ -137,6 +137,7 @@ export default function Home() {
   const [audioDiagnostics, setAudioDiagnostics] = useState(null);
   const [audioDiagnosticsLoading, setAudioDiagnosticsLoading] = useState(false);
   const [audioPlaybackError, setAudioPlaybackError] = useState('');
+  const [audioSetupOpening, setAudioSetupOpening] = useState(false);
   const [audioStarting, setAudioStarting] = useState(false);
   const [taskNotificationStatus, setTaskNotificationStatus] = useState(null);
   const [orbState, setOrbState] = useState('idle');
@@ -1431,19 +1432,39 @@ export default function Home() {
                         {canOpenSpeechEngineSettings() && (
                           <button
                             type="button"
+                            disabled={audioSetupOpening}
                             onClick={async () => {
-                              setAudioSettingsMessage('جارٍ استدعاء openInstall لفتح فحص بيانات محرك النطق في Android...');
+                              setAudioSetupOpening(true);
+                              setAudioSettingsMessage('جارٍ فتح تثبيت بيانات الصوت في Android...');
                               try {
-                                await openSpeechEngineSettings();
-                                setAudioSettingsMessage('اكتمل استدعاء openInstall. إذا ظهرت شاشة إعداد محرك النطق، ثبّت البيانات المطلوبة ثم ارجع إلى التطبيق؛ سيُعاد الفحص عند العودة ويمكنك تشغيل العينة مجددًا.');
+                                const result = await openSpeechEngineSettings();
+                                const diagnostics = await getSpeechDiagnostics();
+                                setAudioDiagnostics(diagnostics);
+                                try {
+                                  setAudioVoiceInfo(await getArabicVoiceInfo());
+                                  setAudioVoiceError('');
+                                } catch (error) {
+                                  setAudioVoiceInfo(null);
+                                  setAudioVoiceError(error?.message || 'لم يظهر صوت عربي بعد الرجوع من إعدادات المحرك.');
+                                }
+                                const availableArabicVoice = diagnostics.nativeEngine.arabicLanguages
+                                  .some((language) => /^ar(?:-|$)/i.test(language) && !/^ar-JO(?:-|$)/i.test(language));
+                                const action = result.action === 'settings'
+                                  ? 'إعدادات تحويل النص إلى كلام'
+                                  : 'شاشة تثبيت بيانات محرك النطق';
+                                setAudioSettingsMessage(availableArabicVoice
+                                  ? `عادت الشاشة من ${action} وتم العثور على لغة صوت عربي؛ جرّب العينة للتحقق من التشغيل.`
+                                  : `عادت الشاشة من ${action}، لكن لم يظهر صوت عربي مثبت. اختر تنزيل/تثبيت صوت عربي داخل إعدادات المحرك، ثم أعد الاختبار.`);
                               } catch (error) {
                                 console.error('[TTS] Could not open Android speech setup:', error);
-                                setAudioSettingsMessage(`فشل openInstall: ${error?.message || String(error)}`);
+                                setAudioSettingsMessage(`فشل فتح تثبيت بيانات الصوت: ${error?.message || String(error)}`);
+                              } finally {
+                                setAudioSetupOpening(false);
                               }
                             }}
-                            className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-card hover:text-text-primary"
+                            className="min-h-9 rounded-lg border border-base-border px-3 text-xs text-text-secondary hover:bg-base-card hover:text-text-primary disabled:opacity-50"
                           >
-                            فتح إعداد تثبيت بيانات محرك النطق
+                            {audioSetupOpening ? 'جارٍ فتح إعدادات الصوت...' : 'تنزيل أو تثبيت بيانات صوت Android'}
                           </button>
                         )}
                         <section

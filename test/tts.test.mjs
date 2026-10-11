@@ -5,8 +5,8 @@ import test from 'node:test';
 
 const source = await readFile(new URL('../lib/tts.js', import.meta.url), 'utf8');
 const testableSource = source.replace(
-  "import { Capacitor } from '@capacitor/core';",
-  "const Capacitor = { isNativePlatform: () => false, isPluginAvailable: () => false, getPlatform: () => 'web' };"
+  "import { Capacitor, registerPlugin } from '@capacitor/core';",
+  "const Capacitor = { isNativePlatform: () => false, isPluginAvailable: () => false, getPlatform: () => 'web' }; const registerPlugin = () => globalThis.__speechEngineSetupMock;"
 );
 const tts = await import(`data:text/javascript;base64,${Buffer.from(testableSource).toString('base64')}`);
 
@@ -153,15 +153,18 @@ test('uses native Android TTS voices and reports native engine failures', async 
       activeUtterances -= 1;
     },
     async stop() {},
-    async openInstall() {
-      installOpened = true;
-    },
   };
   globalThis.__nativeSpeechMock = nativePlugin;
+  globalThis.__speechEngineSetupMock = {
+    openInstall: async () => {
+      installOpened = true;
+      return { action: 'install' };
+    },
+  };
   const nativeSource = source
     .replace(
-      "import { Capacitor } from '@capacitor/core';",
-      "const Capacitor = { isNativePlatform: () => true, isPluginAvailable: () => true, getPlatform: () => 'android' };"
+      "import { Capacitor, registerPlugin } from '@capacitor/core';",
+      "const Capacitor = { isNativePlatform: () => true, isPluginAvailable: () => true, getPlatform: () => 'android' }; const registerPlugin = () => globalThis.__speechEngineSetupMock;"
     )
     .replace(
       "await import('@capacitor-community/text-to-speech')",
@@ -206,11 +209,12 @@ test('uses native Android TTS voices and reports native engine failures', async 
   assert.equal(failedDiagnostics.nativeEngine.getSupportedVoicesSucceeded, false);
   assert.match(failedDiagnostics.nativeEngine.error, /native-voice-query-failed/);
 
-  await nativeTts.openSpeechEngineSettings();
+  assert.deepEqual(await nativeTts.openSpeechEngineSettings(), { action: 'install' });
   assert.equal(installOpened, true);
-  nativePlugin.openInstall = async () => {
+  globalThis.__speechEngineSetupMock.openInstall = async () => {
     throw new Error('install-settings-failed');
   };
   await assert.rejects(nativeTts.openSpeechEngineSettings(), /install-settings-failed/);
   delete globalThis.__nativeSpeechMock;
+  delete globalThis.__speechEngineSetupMock;
 });
