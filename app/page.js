@@ -857,6 +857,8 @@ export default function Home() {
                     onPointerUp={stopAudioListening}
                     onPointerCancel={stopAudioListening}
                     onLostPointerCapture={stopAudioListening}
+                    onContextMenu={(event) => event.preventDefault()}
+                    onDragStart={(event) => event.preventDefault()}
                     onKeyDown={(event) => {
                       if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
                         event.preventDefault();
@@ -870,7 +872,8 @@ export default function Home() {
                       }
                     }}
                     aria-pressed={orbState === 'listening' || orbState === 'listening-active'}
-                    className="mt-4 rounded-lg bg-gold px-4 py-2 text-sm font-semibold text-base-bg disabled:cursor-wait disabled:opacity-60"
+                    className="mt-4 touch-none select-none rounded-lg bg-gold px-4 py-2 text-sm font-semibold text-base-bg disabled:cursor-wait disabled:opacity-60"
+                    style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
                   >
                     {audioStarting ? 'جارٍ تفعيل الميكروفون...' : 'اضغط باستمرار للتحدث'}
                   </button>

@@ -5,6 +5,7 @@ out/
 build/
 .env
 .env.local
+.env.development.local
 .env.production
 .env.development
 *.log

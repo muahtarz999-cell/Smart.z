@@ -209,6 +209,19 @@ test('uses native Android TTS voices and reports native engine failures', async 
   assert.equal(failedDiagnostics.nativeEngine.getSupportedVoicesSucceeded, false);
   assert.match(failedDiagnostics.nativeEngine.error, /native-voice-query-failed/);
 
+  nativePlugin.getSupportedVoices = async () => ({
+    voices: [createVoice('en-US')],
+  });
+  setupSpeechSynthesis(
+    [createVoice('ar-SA')],
+    (utterance) => setTimeout(() => utterance.onend(), 0)
+  );
+  assert.equal((await nativeTts.getArabicVoiceInfo()).native, false);
+  assert.deepEqual(
+    await nativeTts.testSpeechPlayback('اختبار'),
+    { success: true, engine: 'browser', error: null }
+  );
+
   assert.deepEqual(await nativeTts.openSpeechEngineSettings(), { action: 'install' });
   assert.equal(installOpened, true);
   globalThis.__speechEngineSetupMock.openInstall = async () => {
