@@ -7,12 +7,19 @@
         <intent>
             <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="market" />
+        </intent>
     </queries>
 
+    <!-- الأذونات الصوتية والمايكروفون -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission
-        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+    <uses-permission android:name="android.permission.INTERNET" />
+    
+    <!-- أذونات النطق (Text-to-Speech) -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"
         tools:node="remove" />
 
     <application
@@ -44,7 +51,4 @@
         </provider>
     </application>
 
-    <!-- Permissions -->
-
-    <uses-permission android:name="android.permission.INTERNET" />
 </manifest>
