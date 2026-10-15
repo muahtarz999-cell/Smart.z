@@ -1,5 +1,4 @@
 import './globals.css';
-import AppReadinessCheck from '../components/AppReadinessCheck';
 import InstallPrompt from '../components/InstallPrompt';
 
 export const metadata = {
@@ -34,7 +33,6 @@ export default function RootLayout({ children }) {
     <html lang="ar" dir="rtl">
       <body>
         {children}
-        <AppReadinessCheck />
         <InstallPrompt />
       </body>
     </html>

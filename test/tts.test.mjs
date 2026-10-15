@@ -38,7 +38,7 @@ function setupSpeechSynthesis(voices, speak) {
   return synthesis;
 }
 
-test('prefers Saudi then Gulf Arabic, accepts unspecified localService, and excludes Jordanian Arabic', async () => {
+test('follows the plan order: Saudi, Gulf, Jordanian, Egyptian; offline voices before network voices', async () => {
   setupSpeechSynthesis([
     createVoice('ar-JO'),
     createVoice('ar-EG', { localService: undefined }),
@@ -47,17 +47,37 @@ test('prefers Saudi then Gulf Arabic, accepts unspecified localService, and excl
   ]);
   assert.equal((await tts.getArabicVoiceInfo()).language, 'ar-SA');
 
-  setupSpeechSynthesis([
-    createVoice('ar_JO'),
-    createVoice('ar-EG'),
-    createVoice('ar-KW', { localService: false }),
-  ]);
+  setupSpeechSynthesis([createVoice('ar-EG'), createVoice('ar-KW')]);
   assert.equal((await tts.getArabicVoiceInfo()).language, 'ar-KW');
 
-  const jordanOnly = setupSpeechSynthesis([createVoice('ar-JO')]);
-  const jordanOnlyInfo = tts.getArabicVoiceInfo();
-  jordanOnly.dispatchEvent(new Event('voiceschanged'));
-  await assert.rejects(jordanOnlyInfo, /لم يعثر محرك النطق على صوت عربي/);
+  // ar-KW needs the network, so the offline Jordanian voice wins.
+  setupSpeechSynthesis([createVoice('ar_JO'), createVoice('ar-EG'), createVoice('ar-KW', { localService: false })]);
+  assert.equal((await tts.getArabicVoiceInfo()).language, 'ar_JO');
+
+  setupSpeechSynthesis([createVoice('ar-EG'), createVoice('ar-MA')]);
+  assert.equal((await tts.getArabicVoiceInfo()).language, 'ar-EG');
+
+  const englishOnly = setupSpeechSynthesis([createVoice('en-US')]);
+  const englishOnlyInfo = tts.getArabicVoiceInfo();
+  englishOnly.dispatchEvent(new Event('voiceschanged'));
+  await assert.rejects(englishOnlyInfo, /لم يعثر محرك النطق على صوت عربي/);
+});
+
+test('reports an engine that never starts speaking instead of hanging', async () => {
+  setupSpeechSynthesis([createVoice('ar-SA')], () => {}); // speak() accepted, no events ever fire
+  const started = Date.now();
+  await assert.rejects(tts.speak('اختبار'), /لم يبدأ محرك النطق/);
+  assert.ok(Date.now() - started >= 4900);
+});
+
+test('primeSpeech speaks a silent utterance for iOS and never throws', () => {
+  const spoken = [];
+  setupSpeechSynthesis([createVoice('ar-SA')], (utterance) => spoken.push(utterance));
+  tts.primeSpeech();
+  assert.equal(spoken.length, 1);
+  assert.equal(spoken[0].volume, 0);
+  globalThis.window.speechSynthesis.speak = () => { throw new Error('blocked'); };
+  assert.doesNotThrow(() => tts.primeSpeech());
 });
 
 test('waits for voiceschanged and rereads voices when the initial list has no Arabic voice', async () => {

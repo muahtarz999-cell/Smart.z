@@ -1,439 +1,354 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+/**
+ * WhatsApp linking, two paths:
+ *   - Personal (Baileys on a Render node): QR on a computer, pairing code on the phone.
+ *   - Business (Meta Cloud API): official embedded signup, handled by the page (onStartMeta).
+ *
+ * The personal flow keeps polling while the node wakes up (Render free
+ * instances sleep and take up to a minute) and refreshes the QR as WhatsApp
+ * rotates it (~every 20 s). A "pending" answer is never treated as failure.
+ */
 
-export default function WhatsAppClusterConnection({ authSession, customerAccess }) {
-  const [activeTab, setActiveTab] = useState('mobile'); // 'mobile' | 'qr'
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+const POLL_MS = 3000;
+const WAIT_LIMIT_MS = 3 * 60 * 1000;
+
+const STATUS_TEXT = {
+  CONNECTED: 'متصل',
+  WAITING_QR: 'بانتظار المسح',
+  CONNECTING: 'جارٍ الاتصال…',
+  STARTING: 'جارٍ التجهيز…',
+  WAKING: 'الخادم يستيقظ…',
+  IDLE: 'غير متصل',
+  DISCONNECTED: 'غير متصل',
+  ERROR: 'خطأ',
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export default function WhatsAppClusterConnection({
+  getAccessToken,
+  eligible,
+  metaConnection,
+  metaBusy,
+  metaError,
+  onStartMeta,
+}) {
+  const [path, setPath] = useState('personal'); // personal | business
+  const [method, setMethod] = useState('pairing'); // pairing (phone) | qr (computer)
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [status, setStatus] = useState('DISCONNECTED'); // 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'ERROR'
-  const [assignedNodeId, setAssignedNodeId] = useState(null);
-  const [qrCode, setQrCode] = useState(null);
+  const [status, setStatus] = useState({ status: 'DISCONNECTED', connected: false, assigned: false, autoReply: false });
+  const [qr, setQr] = useState(null);
   const [pairingCode, setPairingCode] = useState(null);
-  const [deepLink, setDeepLink] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [checkingStatus, setCheckingStatus] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const [waitNote, setWaitNote] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
-  const pollTimerRef = useRef(null);
+  const [allowlistDraft, setAllowlistDraft] = useState(null);
+  const runRef = useRef(0); // increments to cancel any running wait loop
 
-  const token = authSession?.access_token;
-  const isEligible = customerAccess?.status === 'active' && Boolean(token);
+  const api = useCallback(async (url, init = {}) => {
+    const token = await getAccessToken();
+    if (!token) throw new Error('انتهت جلسة الدخول. سجّل الدخول مرة أخرى.');
+    const response = await fetch(url, {
+      ...init,
+      headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    const data = await response.json().catch(() => ({}));
+    return { status: response.status, ok: response.ok, data };
+  }, [getAccessToken]);
 
-  // Poll connection status
-  const fetchStatus = useCallback(async (silent = false) => {
-    if (!token) return;
-    if (!silent) setCheckingStatus(true);
+  const refreshStatus = useCallback(async () => {
+    const result = await api('/api/whatsapp/cluster/status');
+    if (result.ok || result.data?.status) setStatus((current) => ({ ...current, ...result.data }));
+    return result.data;
+  }, [api]);
+
+  useEffect(() => {
+    if (!eligible) return undefined;
+    refreshStatus().catch(() => {});
+    return () => { runRef.current += 1; };
+  }, [eligible, refreshStatus]);
+
+  async function waitForLink(kind) {
+    const run = ++runRef.current;
+    const started = Date.now();
+    setWaiting(true);
+    setError('');
+    setQr(null);
+    setPairingCode(null);
+    setWaitNote('جارٍ تجهيز الخادم…');
+    const digits = phoneNumber.replace(/\D/g, '');
+    let codeShown = false;
 
     try {
-      const response = await fetch('/api/whatsapp/cluster/status', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Cache-Control': 'no-store',
-        },
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        setStatus(data.status || 'DISCONNECTED');
-        if (data.nodeId) setAssignedNodeId(data.nodeId);
-        if (data.status === 'CONNECTED') {
-          setQrCode(null);
-          setPairingCode(null);
-          setDeepLink(null);
-          if (pollTimerRef.current) {
-            clearInterval(pollTimerRef.current);
-            pollTimerRef.current = null;
+      while (run === runRef.current && Date.now() - started < WAIT_LIMIT_MS) {
+        if (kind === 'qr' || !codeShown) {
+          const query = kind === 'qr' ? 'method=qr' : `method=pairing_code&phoneNumber=${encodeURIComponent(digits)}`;
+          const { ok, status: httpStatus, data } = await api(`/api/whatsapp/cluster/connect?${query}`);
+          if (run !== runRef.current) return;
+          if (data.connected) break;
+          if (!ok && httpStatus !== 202) throw new Error(data.error || 'تعذر بدء الربط.');
+          if (data.qr) { setQr(data.qr); setWaitNote('امسح الرمز من WhatsApp ← الأجهزة المرتبطة. يتجدد تلقائياً.'); }
+          if (data.pairingCode) { setPairingCode(data.pairingCode); codeShown = true; setWaitNote('أدخل الرمز في WhatsApp خلال دقيقتين.'); }
+          if (data.pending) {
+            setWaitNote(data.status === 'WAKING'
+              ? 'الخادم كان نائماً ويستيقظ الآن؛ قد يستغرق ذلك حتى دقيقة.'
+              : 'جارٍ تجهيز الجلسة…');
           }
         }
+        const current = await refreshStatus();
+        if (run !== runRef.current) return;
+        if (current?.connected) break;
+        await sleep(POLL_MS);
       }
-    } catch (err) {
-      if (!silent) {
-        console.warn('[WhatsApp Cluster] Status check error:', err);
-      }
+      if (run !== runRef.current) return;
+      const final = await refreshStatus();
+      if (!final?.connected) setError('انتهت مهلة الربط. اضغط «ابدأ الربط» مرة أخرى.');
+    } catch (loopError) {
+      if (run === runRef.current) setError(loopError.message || 'تعذر الربط.');
     } finally {
-      if (!silent) setCheckingStatus(false);
-    }
-  }, [token]);
-
-  // Initial status check
-  useEffect(() => {
-    if (isEligible) {
-      fetchStatus();
-    }
-    return () => {
-      if (pollTimerRef.current) {
-        clearInterval(pollTimerRef.current);
+      if (run === runRef.current) {
+        setWaiting(false);
+        setQr(null);
+        setWaitNote('');
       }
-    };
-  }, [isEligible, fetchStatus]);
+    }
+  }
 
-  // Start polling when waiting for connection
-  const startPolling = useCallback(() => {
-    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-    pollTimerRef.current = setInterval(() => {
-      fetchStatus(true);
-    }, 4000);
-  }, [fetchStatus]);
+  function startLink(event) {
+    event?.preventDefault();
+    if (method === 'pairing') {
+      const digits = phoneNumber.replace(/\D/g, '');
+      if (digits.length < 9 || digits.length > 15 || digits.startsWith('0')) {
+        setError('اكتب الرقم مع رمز الدولة بدون + أو صفر في البداية، مثل 9665xxxxxxxx.');
+        return;
+      }
+    }
+    void waitForLink(method === 'qr' ? 'qr' : 'pairing');
+  }
 
-  // Request QR Code
-  async function handleRequestQr() {
-    if (!token) return;
-    setLoading(true);
-    setErrorMessage('');
+  function cancelLink() {
+    runRef.current += 1;
+    setWaiting(false);
+    setQr(null);
     setPairingCode(null);
-    setDeepLink(null);
+    setWaitNote('');
+  }
 
+  async function disconnect() {
+    if (!window.confirm('سيُسجَّل خروج WhatsApp من خادم Smart.z وتُمسح الجلسة. هل تريد المتابعة؟')) return;
+    cancelLink();
+    setBusy(true);
+    setError('');
     try {
-      const response = await fetch('/api/whatsapp/cluster/connect?method=qr', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Cache-Control': 'no-store',
-        },
-      });
-
-      const data = await response.json();
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || 'تعذر استخراج رمز الـ QR.');
-      }
-
-      setQrCode(data.qr);
-      if (data.nodeId) setAssignedNodeId(data.nodeId);
-      if (data.status) setStatus(data.status);
-
-      startPolling();
-    } catch (err) {
-      setErrorMessage(err.message || 'حدث خطأ أثناء طلب رمز الـ QR.');
+      const { ok, data } = await api('/api/whatsapp/cluster/disconnect', { method: 'POST' });
+      if (!ok) throw new Error(data.error || 'تعذر فك الربط.');
+      setStatus({ status: 'DISCONNECTED', connected: false, assigned: false, autoReply: false });
+    } catch (disconnectError) {
+      setError(disconnectError.message);
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
-  // Request Pairing Code
-  async function handleRequestPairingCode(e) {
-    if (e) e.preventDefault();
-    if (!token) return;
-
-    const cleanedNumber = phoneNumber.replace(/\D/g, '');
-    if (!cleanedNumber || cleanedNumber.length < 9) {
-      setErrorMessage('يرجى إدخال رقم هاتف صحيح مع كود الدولة (مثال: 9665xxxxxxxx أو 201xxxxxxxxx).');
-      return;
-    }
-
-    setLoading(true);
-    setErrorMessage('');
-    setQrCode(null);
-
+  async function saveRules(changes) {
+    setBusy(true);
+    setError('');
     try {
-      const response = await fetch(
-        `/api/whatsapp/cluster/connect?method=pairing_code&phoneNumber=${encodeURIComponent(cleanedNumber)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Cache-Control': 'no-store',
-          },
-        }
-      );
-
-      const data = await response.json();
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || 'تعذر استخراج رمز الاقتران.');
-      }
-
-      setPairingCode(data.pairingCode);
-      setDeepLink(data.deepLink);
-      if (data.nodeId) setAssignedNodeId(data.nodeId);
-      if (data.status) setStatus(data.status);
-
-      startPolling();
-    } catch (err) {
-      setErrorMessage(err.message || 'حدث خطأ أثناء طلب رمز الاقتران.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Disconnect & release node slot
-  async function handleDisconnect() {
-    if (!token) return;
-    if (!window.confirm('هل أنت متأكد من رغبتك في إلغاء ربط الواتساب وفك حجز الخادم؟')) return;
-
-    setLoading(true);
-    setErrorMessage('');
-    try {
-      const response = await fetch('/api/whatsapp/cluster/disconnect', {
+      const { ok, data } = await api('/api/whatsapp/cluster/settings', {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(changes),
       });
-
-      if (response.ok) {
-        setStatus('DISCONNECTED');
-        setAssignedNodeId(null);
-        setQrCode(null);
-        setPairingCode(null);
-        setDeepLink(null);
-        if (pollTimerRef.current) {
-          clearInterval(pollTimerRef.current);
-          pollTimerRef.current = null;
-        }
-      }
-    } catch (err) {
-      setErrorMessage('تعذر قطع الاتصال حالياً.');
+      if (!ok) throw new Error(data.error || 'تعذر حفظ الإعداد.');
+      setStatus((current) => ({ ...current, ...data }));
+      return true;
+    } catch (saveError) {
+      setError(saveError.message);
+      return false;
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
-  // Copy pairing code to clipboard
-  function handleCopyPairingCode() {
+  const toggleAutoReply = () => saveRules({ autoReply: !status.autoReply });
+
+  function copyCode() {
     if (!pairingCode) return;
-    navigator.clipboard.writeText(pairingCode).then(() => {
+    navigator.clipboard?.writeText(pairingCode.replace('-', '')).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    });
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
   }
 
-  if (!isEligible) {
+  if (!eligible) {
     return (
-      <div className="rounded-lg border border-base-border bg-base-card p-4 text-center">
-        <p className="text-xs text-text-secondary">سجّل الدخول بحساب معتمد لتفعيل ربط مساعد الواتساب.</p>
+      <div className="rounded-lg border border-base-border bg-base-card p-4 text-center text-xs text-text-secondary">
+        سجّل الدخول بحساب مفعّل لربط WhatsApp.
       </div>
     );
   }
 
-  const isConnected = status === 'CONNECTED';
+  const tab = (value, label, current, set) => (
+    <button
+      type="button"
+      onClick={() => set(value)}
+      aria-pressed={current === value}
+      className={`min-h-9 flex-1 rounded-md px-3 text-xs ${current === value ? 'bg-gold text-base-bg font-semibold' : 'text-text-secondary hover:text-text-primary'}`}
+    >
+      {label}
+    </button>
+  );
 
   return (
-    <div className="space-y-4 rounded-xl border border-base-border bg-base-card p-4 transition-all">
-      {/* Header and Live Status */}
-      <div className="flex items-center justify-between border-b border-base-border/60 pb-3">
-        <div>
-          <h3 className="text-sm font-semibold text-text-primary">مساعد الواتساب الموزع</h3>
-          <p className="mt-0.5 text-xs text-text-secondary">
-            عنقود سحابي موزع عبر 5 خوادم Render مع عزل كامل لكل مشترك.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {assignedNodeId && (
-            <span className="rounded-full border border-base-border bg-base-panel px-2.5 py-0.5 text-[11px] text-text-secondary font-mono">
-              خادم #{assignedNodeId}
-            </span>
-          )}
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-              isConnected
-                ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                : status === 'CONNECTING'
-                ? 'border border-amber-500/30 bg-amber-500/10 text-amber-400'
-                : 'border border-base-border bg-base-panel text-text-secondary'
-            }`}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                isConnected
-                  ? 'bg-emerald-400 animate-pulse'
-                  : status === 'CONNECTING'
-                  ? 'bg-amber-400 animate-ping'
-                  : 'bg-text-secondary'
-              }`}
-            />
-            {isConnected ? 'متصل بنجاح' : status === 'CONNECTING' ? 'جارٍ الاتصال...' : 'غير متصل'}
-          </span>
-        </div>
+    <div className="space-y-4 rounded-xl border border-base-border bg-base-card p-4">
+      <div className="flex gap-1 rounded-lg border border-base-border bg-base-panel p-1">
+        {tab('personal', 'حساب شخصي', path, setPath)}
+        {tab('business', 'حساب أعمال (Meta)', path, setPath)}
       </div>
 
-      {/* State: CONNECTED */}
-      {isConnected ? (
-        <div className="space-y-3 py-2 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
-            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-text-primary">الجلسة نشطة ومحمية</p>
-            <p className="mt-1 text-xs text-text-secondary">
-              تم تثبيت حسابك على الخادم المخصص #{assignedNodeId}، ومساعدك جاهز لتلقي واستقبال الرسائل.
+      {path === 'business' ? (
+        <div className="space-y-3 text-xs leading-6 text-text-secondary">
+          <p>للأنشطة التجارية ذات الرسائل الكثيرة: ربط رسمي عبر WhatsApp Business Platform من Meta، برقم أعمال مسجل.</p>
+          {metaConnection ? (
+            <p className="text-text-primary">
+              مرتبط{metaConnection.displayPhoneNumber ? ` · ${metaConnection.displayPhoneNumber}` : ''}
+              {metaConnection.verifiedName ? ` · ${metaConnection.verifiedName}` : ''}
             </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleDisconnect}
-            disabled={loading}
-            className="mt-2 min-h-9 rounded-lg border border-red-500/30 bg-red-500/10 px-4 text-xs font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-60 transition-colors"
-          >
-            {loading ? 'جارٍ فك الارتباط...' : 'قطع الاتصال وإلغاء حجز الخادم'}
+          ) : null}
+          <button type="button" disabled={metaBusy} onClick={onStartMeta}
+            className="min-h-10 w-full rounded-lg bg-gold px-3 text-sm font-semibold text-base-bg disabled:opacity-60">
+            {metaBusy ? 'جارٍ الربط عبر Meta…' : metaConnection ? 'استبدال رقم الأعمال' : 'ربط حساب الأعمال عبر Meta'}
           </button>
+          {metaError && <p role="alert" className="text-amber-300">{metaError}</p>}
         </div>
       ) : (
-        /* State: DISCONNECTED / PAIRING */
         <div className="space-y-4">
-          {/* Tab Selector: Mobile vs Desktop */}
-          <div className="grid grid-cols-2 gap-1 rounded-lg border border-base-border bg-base-panel p-1">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('mobile');
-                setErrorMessage('');
-              }}
-              className={`flex items-center justify-center gap-2 rounded-md py-1.5 text-xs font-medium transition-colors ${
-                activeTab === 'mobile'
-                  ? 'bg-gold/15 text-gold border border-gold/30 shadow-sm'
-                  : 'text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
-              </svg>
-              الهاتف المحمول (Pairing Code)
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('qr');
-                setErrorMessage('');
-              }}
-              className={`flex items-center justify-center gap-2 rounded-md py-1.5 text-xs font-medium transition-colors ${
-                activeTab === 'qr'
-                  ? 'bg-gold/15 text-gold border border-gold/30 shadow-sm'
-                  : 'text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
-              </svg>
-              الكمبيوتر (QR Code)
-            </button>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-text-secondary">لمن يتلقى رسائل قليلة يومياً. يربط رقمك كجهاز مرتبط.</span>
+            <span className={`rounded-full border px-2 py-0.5 ${status.connected ? 'border-emerald-500/40 text-emerald-300' : 'border-base-border text-text-secondary'}`}>
+              {STATUS_TEXT[status.status] || status.status}
+            </span>
           </div>
 
-          {/* Tab 1: Mobile (Pairing Code + Deep Link) */}
-          {activeTab === 'mobile' && (
+          {status.connected ? (
             <div className="space-y-3">
-              <form onSubmit={handleRequestPairingCode} className="space-y-2">
-                <label htmlFor="cluster-phone" className="block text-xs font-medium text-text-primary">
-                  رقم الهاتف (مع مفتاح الدولة)
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    id="cluster-phone"
-                    type="tel"
-                    dir="ltr"
-                    placeholder="مثال: 966501234567 أو 201012345678"
-                    value={phoneNumber}
-                    onChange={(e) => setPhoneNumber(e.target.value)}
-                    disabled={loading}
-                    className="flex-1 rounded-lg border border-base-border bg-base-panel px-3 py-2 text-xs text-text-primary placeholder:text-text-secondary/50 focus:border-gold/50 focus:outline-none focus:ring-1 focus:ring-gold/50"
-                  />
-                  <button
-                    type="submit"
-                    disabled={loading || !phoneNumber.trim()}
-                    className="min-h-9 rounded-lg border border-gold/40 bg-gold/10 px-4 text-xs font-medium text-gold hover:bg-gold/20 disabled:border-base-border disabled:text-text-secondary disabled:opacity-50 transition-colors"
-                  >
-                    {loading ? 'جارٍ الطلب...' : 'طلب الرمز'}
-                  </button>
-                </div>
-              </form>
-
-              {/* Pairing Code Display */}
-              {pairingCode && (
-                <div className="space-y-3 rounded-lg border border-gold/30 bg-gold/5 p-3.5 text-center animate-fade-in">
-                  <p className="text-xs text-text-secondary">رمز الاقتران المخصص لحسابك:</p>
-                  <div className="my-1 flex items-center justify-center gap-3">
-                    <span className="font-mono text-2xl font-bold tracking-widest text-gold select-all">
-                      {pairingCode}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={handleCopyPairingCode}
-                      className="rounded border border-gold/40 bg-gold/10 px-2 py-1 text-[11px] text-gold hover:bg-gold/20 transition-colors"
-                      title="نسخ الرمز"
-                    >
-                      {copied ? 'تم النسخ ✓' : 'نسخ'}
-                    </button>
-                  </div>
-
-                  {deepLink && (
-                    <div className="pt-1">
-                      <a
-                        href={deepLink}
-                        className="inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500 transition-colors"
-                      >
-                        <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.62C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.05 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.15 12.04 20.15C10.56 20.15 9.11 19.76 7.85 19.01L7.55 18.83L4.43 19.65L5.26 16.61L5.06 16.29C4.24 14.99 3.8 13.47 3.8 11.91C3.81 7.37 7.5 3.67 12.05 3.67Z" />
-                        </svg>
-                        فتح في واتساب مباشرة (Deep Link)
-                      </a>
-                    </div>
+              <p className="text-sm text-text-primary">
+                WhatsApp مرتبط{status.phone ? ` بالرقم ${status.phone}` : ''}.
+              </p>
+              <label className="flex items-center justify-between gap-3 rounded-lg border border-base-border p-3">
+                <span className="text-xs leading-5 text-text-secondary">
+                  <span className="block text-sm text-text-primary">الرد التلقائي</span>
+                  عند التفعيل يرد المساعد على الرسائل النصية والصوتية الفردية التي تصلك (لا المجموعات).
+                </span>
+                <button type="button" role="switch" aria-checked={status.autoReply} disabled={busy} onClick={toggleAutoReply}
+                  className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors ${status.autoReply ? 'bg-gold' : 'bg-base-border'}`}>
+                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${status.autoReply ? 'right-0.5' : 'right-[22px]'}`} />
+                </button>
+              </label>
+              {status.autoReply && (
+                <div className="space-y-3 rounded-lg border border-base-border p-3">
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-text-secondary">من يرد عليهم</span>
+                    <select value={status.replyScope || 'all'} disabled={busy}
+                      onChange={(event) => saveRules({ replyScope: event.target.value })}
+                      className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-sm text-text-primary">
+                      <option value="all">الجميع (المحادثات الفردية فقط)</option>
+                      <option value="allowlist">أرقام محددة فقط</option>
+                    </select>
+                  </label>
+                  {status.replyScope === 'allowlist' && (
+                    <label className="block space-y-1.5">
+                      <span className="text-xs text-text-secondary">الأرقام مع رمز الدولة، رقم في كل سطر</span>
+                      <textarea dir="ltr" rows={4} value={allowlistDraft ?? (status.allowedNumbers || []).join('\n')}
+                        onChange={(event) => setAllowlistDraft(event.target.value)}
+                        className="w-full rounded-md border border-base-border bg-base-panel px-3 py-2 text-left text-sm text-text-primary" />
+                      <button type="button" disabled={busy || allowlistDraft === null}
+                        onClick={async () => { if (await saveRules({ allowedNumbers: allowlistDraft.split(/[\s,،]+/) })) setAllowlistDraft(null); }}
+                        className="min-h-9 w-full rounded-md border border-gold/40 px-3 text-xs text-gold disabled:opacity-50">حفظ الأرقام</button>
+                    </label>
                   )}
-
-                  <p className="mt-2 text-[11px] leading-4 text-text-secondary">
-                    افتح الرابط أعلاه من هاتفك أو افتح إشعار واتساب، ثم اكتب الرمز للتأكيد.
-                  </p>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-text-secondary">شكل الرد</span>
+                    <select value={status.voiceReplyMode || 'match'} disabled={busy}
+                      onChange={(event) => saveRules({ voiceReplyMode: event.target.value })}
+                      className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-sm text-text-primary">
+                      <option value="match">مثل الرسالة: الصوتية بصوت والمكتوبة بكتابة</option>
+                      <option value="text">كتابة دائماً</option>
+                      <option value="voice">رسالة صوتية دائماً</option>
+                    </select>
+                  </label>
                 </div>
               )}
+              <button type="button" disabled={busy} onClick={disconnect}
+                className="min-h-10 w-full rounded-lg border border-red-500/40 px-3 text-sm text-red-300 disabled:opacity-60">
+                فك الربط ومسح الجلسة
+              </button>
             </div>
-          )}
+          ) : (
+            <form onSubmit={startLink} className="space-y-3">
+              <div className="flex gap-1 rounded-lg border border-base-border bg-base-panel p-1">
+                {tab('pairing', 'من الهاتف (رمز)', method, setMethod)}
+                {tab('qr', 'من الكمبيوتر (QR)', method, setMethod)}
+              </div>
 
-          {/* Tab 2: Desktop (QR Code) */}
-          {activeTab === 'qr' && (
-            <div className="space-y-3 text-center">
-              {qrCode ? (
-                <div className="space-y-2">
-                  <div className="inline-block rounded-xl border border-base-border bg-white p-3 shadow-md">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={qrCode}
-                      alt="رمز الاستجابة السريعة لواتساب"
-                      className="h-48 w-48 object-contain"
-                    />
-                  </div>
-                  <p className="text-xs text-text-secondary">
-                    امسح الرمز بكاميرا واتساب (الأجهزة المرتبطة) من هاتفك.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleRequestQr}
-                    disabled={loading}
-                    className="text-[11px] text-gold hover:underline disabled:opacity-50"
-                  >
-                    {loading ? 'جارٍ التحديث...' : 'إعادة توليد رمز جديد'}
+              {method === 'pairing' && !pairingCode && (
+                <label className="block space-y-1.5">
+                  <span className="text-xs text-text-secondary">رقم WhatsApp مع رمز الدولة</span>
+                  <input type="tel" inputMode="numeric" dir="ltr" value={phoneNumber} disabled={waiting}
+                    onChange={(event) => setPhoneNumber(event.target.value)} placeholder="9665xxxxxxxx"
+                    className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-left text-sm text-text-primary" />
+                </label>
+              )}
+
+              {pairingCode && (
+                <div className="space-y-3 rounded-lg border border-gold/40 bg-gold/5 p-3 text-center">
+                  <p className="font-mono text-2xl tracking-[0.3em] text-gold" dir="ltr">{pairingCode}</p>
+                  <button type="button" onClick={copyCode} className="text-xs text-text-secondary underline">
+                    {copied ? 'تم النسخ' : 'نسخ الرمز'}
                   </button>
+                  <ol className="list-decimal space-y-1 pr-5 text-right text-xs leading-6 text-text-secondary">
+                    <li>افتح WhatsApp ← الإعدادات ← الأجهزة المرتبطة.</li>
+                    <li>اضغط «ربط جهاز» ثم «الربط برقم الهاتف بدلاً من ذلك».</li>
+                    <li>اكتب الرمز أعلاه. ستتحول الحالة هنا إلى «متصل» تلقائياً.</li>
+                  </ol>
                 </div>
+              )}
+
+              {qr && (
+                <div className="space-y-2 text-center">
+                  <img src={qr} alt="رمز QR لربط WhatsApp" className="mx-auto h-56 w-56 rounded-lg bg-white p-2" />
+                </div>
+              )}
+
+              {waiting && waitNote && <p role="status" className="text-xs leading-6 text-text-secondary">{waitNote}</p>}
+
+              {waiting ? (
+                <button type="button" onClick={cancelLink}
+                  className="min-h-10 w-full rounded-lg border border-base-border px-3 text-sm text-text-primary">
+                  إلغاء
+                </button>
               ) : (
-                <div className="py-4">
-                  <p className="mb-3 text-xs text-text-secondary">
-                    انقر أدناه لتوليد رمز الاستجابة السريعة من خادم الواتساب المخصص لك.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleRequestQr}
-                    disabled={loading}
-                    className="min-h-9 rounded-lg border border-gold/40 bg-gold/10 px-5 text-xs font-medium text-gold hover:bg-gold/20 disabled:border-base-border disabled:text-text-secondary disabled:opacity-50 transition-colors"
-                  >
-                    {loading ? 'جارٍ استخراج الرمز من السيرفر...' : 'عرض رمز الـ QR'}
-                  </button>
-                </div>
+                <button type="submit" className="min-h-10 w-full rounded-lg bg-gold px-3 text-sm font-semibold text-base-bg">
+                  ابدأ الربط
+                </button>
               )}
-            </div>
+              {status.assigned && !waiting && (
+                <button type="button" disabled={busy} onClick={disconnect}
+                  className="w-full text-center text-xs text-text-secondary underline-offset-4 hover:underline">
+                  تحرير الخادم المحجوز
+                </button>
+              )}
+            </form>
           )}
-
-          {/* Error Message Display */}
-          {errorMessage && (
-            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-400">
-              {errorMessage}
-            </div>
-          )}
-
-          {/* Checking Status Indicator */}
-          {checkingStatus && (
-            <p className="text-center text-[11px] text-text-secondary animate-pulse">
-              جارٍ فحص حالة الاتصال لحظياً...
-            </p>
-          )}
+          {error && <p role="alert" className="text-xs leading-5 text-amber-300">{error}</p>}
         </div>
       )}
     </div>
   );
 }
-

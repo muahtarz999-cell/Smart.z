@@ -3,85 +3,180 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const source = await readFile(new URL('../lib/audio-flow.js', import.meta.url), 'utf8');
-const testableSource = source
-  .replace(
-    "import { VoiceActivityDetector } from './vad';",
-    `let vadStart = async () => true;
-     let vadStopCalls = 0;
-     class VoiceActivityDetector {
-       constructor() { this.isSpeaking = false; }
-       async start() {
-         const started = await vadStart();
-         this.isRunning = started;
-         return started;
-       }
-       stop() { this.isRunning = false; vadStopCalls += 1; }
-       setInterruptMode() {}
-     }`
-  )
-  .replace(
-    "import { speak, stopSpeaking } from './tts';",
-    'const speak = async () => true; const stopSpeaking = () => {};'
-  )
-  .replace(
-    "import { addMessage, getRecentMessages } from './conversation';",
-    'const addMessage = async () => {}; const getRecentMessages = async () => [];'
-  );
-const audioFlowModule = await import(
-  `data:text/javascript;base64,${Buffer.from(
-    `${testableSource}\nexport const testControls = { setVADStart: (start) => { vadStart = start; }, get vadStopCalls() { return vadStopCalls; } };`
-  ).toString('base64')}`
-);
+const testable = source
+  .replace("import { VoiceRecorder } from './voice-recorder';", 'class VoiceRecorder {}')
+  .replace("import { primeSpeech, speak, stopSpeaking } from './speech';",
+    `const primeSpeech = () => globalThis.__flowEvents.push('prime');
+     const speak = async (text) => { globalThis.__flowEvents.push('speak:' + text); return true; };
+     const stopSpeaking = () => globalThis.__flowEvents.push('stop-speaking');`)
+  .replace("import { addMessage, getRecentMessages } from './conversation';",
+    `const addMessage = async (role, content) => { globalThis.__flowHistory.push({ role, content }); };
+     const getRecentMessages = async (limit) => globalThis.__flowHistory.slice(-limit);`)
+  .replace("from './driving-commands'", `from '${new URL('../lib/driving-commands.js', import.meta.url).href}'`);
 
-function createManager() {
-  Object.defineProperty(globalThis, 'navigator', {
-    configurable: true,
-    value: {
-      mediaDevices: {
-        getUserMedia: async () => ({
-          getTracks: () => [{ stop() {} }],
-        }),
-      },
+globalThis.__flowEvents = [];
+globalThis.__flowHistory = [];
+const { AudioFlowManager } = await import(`data:text/javascript;base64,${Buffer.from(testable).toString('base64')}`);
+
+function fakeRecorder({ startResult = true, startError, recording = { blob: new Blob(['x']), durationMs: 900 } } = {}) {
+  return {
+    state: 'idle',
+    start() {
+      globalThis.__flowEvents.push('mic-open');
+      if (startError) return Promise.reject(startError);
+      this.state = startResult ? 'recording' : 'idle';
+      return Promise.resolve(startResult);
     },
-  });
-  return new audioFlowModule.AudioFlowManager();
+    async stop() {
+      globalThis.__flowEvents.push('mic-released');
+      this.state = 'idle';
+      return recording;
+    },
+    cancel() { this.state = 'idle'; },
+  };
 }
 
-test('starts and stops listening through the page-facing lifecycle methods', async () => {
-  const manager = createManager();
+function setup(options = {}, responses = {}) {
+  globalThis.__flowEvents = [];
+  globalThis.__flowHistory = [
+    { role: 'user', content: 'السلام عليكم' },
+    { role: 'assistant', content: 'وعليكم السلام' },
+  ];
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    const reply = responses[url] || { status: 200, body: url === '/api/transcribe' ? { text: 'كم الساعة؟' } : { reply: 'الساعة الثالثة.' } };
+    return { ok: reply.status < 300, status: reply.status, json: async () => reply.body };
+  };
+  const states = [];
+  const errors = [];
+  const manager = new AudioFlowManager({
+    recorder: fakeRecorder(options),
+    getAccessToken: async () => 'token-1',
+    getPreferences: () => ({ responseStyle: 'short', language: 'ar' }),
+    getContext: async () => options.context || {},
+    onTurnComplete: () => { globalThis.__flowEvents.push('turn-complete'); },
+    onAction: (action) => { globalThis.__flowEvents.push(`action:${action.type}`); },
+    interceptTranscript: options.intercept || (() => false),
+    onStateChange: (state) => states.push(state),
+    onError: (error) => errors.push(error),
+  });
+  return { manager, states, errors, requests };
+}
 
-  assert.equal(await manager.start(), true);
-  assert.equal(manager.isListening, true);
-  assert.equal(manager.isVADRunning, true);
+test('a full voice turn releases the mic before speaking and sends history and preferences', async () => {
+  const { manager, states, errors, requests } = setup();
+  assert.equal(await manager.beginTurn(), true);
+  assert.deepEqual(globalThis.__flowEvents.slice(0, 3), ['stop-speaking', 'prime', 'mic-open']);
+  assert.equal(manager.isRecording, true);
 
-  manager.stopListening();
-  assert.equal(manager.isListening, false);
-  assert.equal(manager.isVADRunning, false);
-  assert.equal(manager.vad, null);
+  assert.equal(await manager.endTurn(), true);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(states, ['preparing', 'listening', 'transcribing', 'thinking', 'speaking', 'ready']);
 
-  await manager.start();
-  manager.stop();
-  assert.equal(manager.isListening, false);
-  assert.equal(manager.vad, null);
+  const events = globalThis.__flowEvents;
+  assert.ok(events.indexOf('mic-released') < events.indexOf('speak:الساعة الثالثة.'), 'mic must be closed before speech');
+
+  const ask = JSON.parse(requests.find((r) => r.url === '/api/assistant').init.body);
+  assert.equal(ask.message, 'كم الساعة؟');
+  assert.equal(ask.channel, 'voice');
+  assert.equal(ask.responseStyle, 'short');
+  assert.deepEqual(ask.history.map((t) => t.role), ['user', 'assistant']);
+  assert.equal(requests[0].init.headers.Authorization, 'Bearer token-1');
 });
 
-test('cancels a microphone start when the user releases before VAD startup completes', async () => {
-  const manager = createManager();
-  let finishStart;
-  audioFlowModule.testControls.setVADStart(
-    () => new Promise((resolve) => { finishStart = resolve; })
-  );
+test('a recording that is too short reports TOO_SHORT and returns to ready', async () => {
+  const { manager, states, errors } = setup({ recording: null });
+  await manager.beginTurn();
+  assert.equal(await manager.endTurn(), false);
+  assert.equal(errors.at(0).code, 'TOO_SHORT');
+  assert.equal(states.at(-1), 'ready');
+});
 
-  const startPromise = manager.start();
-  while (!finishStart) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+test('an expired session surfaces a sign-in message, not a generic failure', async () => {
+  const { manager, errors, states } = setup({}, { '/api/transcribe': { status: 401, body: {} } });
+  await manager.beginTurn();
+  await manager.endTurn();
+  assert.equal(errors.at(0).code, 'AUTH');
+  assert.equal(states.at(-1), 'error');
+});
 
-  manager.stopListening();
-  finishStart(true);
+test('server error messages from transcription reach the user', async () => {
+  const { manager, errors } = setup({}, { '/api/transcribe': { status: 502, body: { code: 'UPSTREAM_RATE_LIMIT', message: 'تم تجاوز حد الاستخدام' } } });
+  await manager.beginTurn();
+  await manager.endTurn();
+  assert.equal(errors.at(0).code, 'UPSTREAM_RATE_LIMIT');
+  assert.equal(errors.at(0).message, 'تم تجاوز حد الاستخدام');
+});
 
-  assert.equal(await startPromise, false);
-  assert.equal(manager.isListening, false);
-  assert.equal(manager.vad, null);
-  assert.ok(audioFlowModule.testControls.vadStopCalls >= 2);
+test('a denied microphone puts the flow in error with the recorder message', async () => {
+  const denied = Object.assign(new Error('لم يُسمح باستخدام الميكروفون'), { code: 'MIC_DENIED' });
+  const { manager, errors, states } = setup({ startError: denied });
+  assert.equal(await manager.beginTurn(), false);
+  assert.equal(errors.at(0).code, 'MIC_DENIED');
+  assert.equal(states.at(-1), 'error');
+});
+
+test('typed messages use the same pipeline without opening the microphone', async () => {
+  const { manager, requests } = setup();
+  const reply = await manager.respondTo('مرحبا');
+  assert.equal(reply, 'الساعة الثالثة.');
+  assert.ok(!globalThis.__flowEvents.includes('mic-open'));
+  assert.equal(JSON.parse(requests[0].init.body).channel, 'text');
+});
+
+test('learning context is sent with the request and learning is triggered after the reply', async () => {
+  const { manager, requests } = setup({ context: { profile: { name: 'فهد' }, memories: ['يحب القهوة'] } });
+  await manager.respondTo('مرحبا');
+  const body = JSON.parse(requests[0].init.body);
+  assert.deepEqual(body.profile, { name: 'فهد' });
+  assert.deepEqual(body.memories, ['يحب القهوة']);
+  assert.ok(globalThis.__flowEvents.includes('turn-complete'));
+});
+
+test('an action from the assistant is handed over after the reply is spoken', async () => {
+  const { manager } = setup({}, { '/api/assistant': { status: 200, body: { reply: 'تم، أرسلت لأمي.', action: { type: 'whatsapp_send' } } } });
+  await manager.respondTo('أرسل لأمي إني جاي');
+  const events = globalThis.__flowEvents;
+  assert.ok(events.indexOf('speak:تم، أرسلت لأمي.') < events.indexOf('action:whatsapp_send'));
+});
+
+test('an intercepted utterance ("تراجع") never reaches the assistant', async () => {
+  const { manager, requests } = setup({ intercept: (text) => text === 'كم الساعة؟' });
+  await manager.beginTurn();
+  assert.equal(await manager.endTurn(), true);
+  assert.ok(!requests.some((r) => r.url === '/api/assistant'));
+});
+
+test('driving mode: a recording is answered on the driving channel; silence hallucinations are dropped quietly', async () => {
+  const { manager, errors, requests } = setup();
+  const result = await manager.respondToRecording(new Blob(['x']), { channel: 'driving', ignoreNoise: true });
+  assert.equal(result.status, 'replied');
+  assert.equal(JSON.parse(requests.find((r) => r.url === '/api/assistant').init.body).channel, 'driving');
+
+  const noisy = setup({}, { '/api/transcribe': { status: 200, body: { text: 'اشتركوا في القناة' } } });
+  const ignored = await noisy.manager.respondToRecording(new Blob(['x']), { channel: 'driving', ignoreNoise: true });
+  assert.equal(ignored.status, 'ignored');
+  assert.equal(noisy.requests.some((r) => r.url === '/api/assistant'), false, 'nothing is asked');
+  assert.deepEqual(noisy.errors, [], 'no error shown to a driver');
+  assert.deepEqual(errors, []);
+});
+
+test('leaving the app closes the microphone and a late reply is shown but not spoken', async () => {
+  const { manager, states } = setup();
+  await manager.beginTurn();
+  manager.setBackgrounded(true);
+  assert.equal(manager.isRecording, false, 'mic closed');
+  assert.equal(states.at(-1), 'ready', 'not stuck on listening');
+
+  globalThis.__flowEvents = [];
+  const replies = [];
+  manager.onReply = (text) => replies.push(text);
+  await manager.respondTo('كم الساعة؟', { channel: 'voice' });
+  assert.deepEqual(replies, ['الساعة الثالثة.']);
+  assert.equal(globalThis.__flowEvents.some((e) => e.startsWith('speak:')), false, 'silent in the background');
+
+  manager.setBackgrounded(false);
+  await manager.respondTo('كم الساعة؟', { channel: 'voice' });
+  assert.ok(globalThis.__flowEvents.includes('speak:الساعة الثالثة.'), 'speaks again in the foreground');
 });

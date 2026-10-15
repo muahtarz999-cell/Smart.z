@@ -7,8 +7,9 @@ android {
         applicationId "com.smartz.assistant"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // CI sets these so every build installs over the previous one.
+        versionCode((System.getenv("SMARTZ_VERSION_CODE") ?: "1").toInteger())
+        versionName(System.getenv("SMARTZ_VERSION_NAME") ?: "1.0")
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +17,28 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Release signing from environment variables (GitHub Actions secrets); never from files in the repo.
+    signingConfigs {
+        release {
+            def keystore = System.getenv("SMARTZ_KEYSTORE_FILE")
+            if (keystore) {
+                storeFile file(keystore)
+                storePassword System.getenv("SMARTZ_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("SMARTZ_KEY_ALIAS")
+                keyPassword System.getenv("SMARTZ_KEY_PASSWORD")
+            }
+        }
+    }
+    lint {
+        // Lint reports stay available, but they never block an APK the owner wants to test.
+        abortOnError false
+        checkReleaseBuilds false
+    }
     buildTypes {
         release {
+            if (System.getenv("SMARTZ_KEYSTORE_FILE")) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
