@@ -5,7 +5,7 @@ import test from 'node:test';
 const source = await readFile(new URL('../lib/audio-flow.js', import.meta.url), 'utf8');
 const testable = source
   .replace("import { VoiceRecorder } from './voice-recorder';", 'class VoiceRecorder {}')
-  .replace("import { primeSpeech, speak, stopSpeaking } from './tts';",
+  .replace("import { primeSpeech, speak, stopSpeaking } from './speech';",
     `const primeSpeech = () => globalThis.__flowEvents.push('prime');
      const speak = async (text) => { globalThis.__flowEvents.push('speak:' + text); return true; };
      const stopSpeaking = () => globalThis.__flowEvents.push('stop-speaking');`)

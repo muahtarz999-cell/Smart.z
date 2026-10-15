@@ -28,9 +28,10 @@ import {
   isSpeechSupported,
   openSpeechEngineSettings,
   preloadArabicVoice,
-  primeSpeech,
   testSpeechPlayback,
 } from '../lib/tts';
+import { configureSpeech, primeSpeech } from '../lib/speech';
+import VoiceSettings from '../components/VoiceSettings';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import {
   getTaskReminderStatus,
@@ -464,6 +465,7 @@ export default function Home() {
   useEffect(() => {
     if (customerAccess.status !== 'active' || !authUser) return undefined;
 
+    configureSpeech({ getAccessToken });
     const audioFlow = new AudioFlowManager({
       getAccessToken,
       getPreferences: () => ({
@@ -1332,7 +1334,7 @@ export default function Home() {
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">صوت المساعد</h2>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        يستخدم Smart.z محرك النطق في جهازك، مفضلاً الصوت المحلي ثم السعودي فالخليجي فالأردني فالمصري. لا يُرسل نص الرد إلى أي خدمة صوت.
+                        الصوت السحابي هو المفضّل، وصوت الجهاز احتياطي يمكنك إيقافه.
                       </p>
                       <button
                         type="button"
@@ -1342,6 +1344,10 @@ export default function Home() {
                         إعادة فحص الأذونات والصوت
                       </button>
                     </div>
+
+                    <VoiceSettings />
+
+                    <h3 className="text-sm font-medium text-text-primary">صوت الجهاز (الاحتياطي)</h3>
 
                     <>
                       {!audioSupported && (

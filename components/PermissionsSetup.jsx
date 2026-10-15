@@ -12,12 +12,8 @@
 
 import { useEffect, useState } from 'react';
 import { getMicrophonePermissionState, requestMicrophonePermission } from '../lib/voice-recorder';
-import {
-  canOpenSpeechEngineSettings,
-  openSpeechEngineSettings,
-  primeSpeech,
-  testSpeechPlayback,
-} from '../lib/tts';
+import { canOpenSpeechEngineSettings, openSpeechEngineSettings } from '../lib/tts';
+import { primeSpeech, testVoice } from '../lib/speech';
 import { areTaskRemindersSupported, requestTaskReminderPermission } from '../lib/task-notifications';
 import { setLearningConsent } from '../lib/learning';
 
@@ -100,7 +96,7 @@ export default function PermissionsSetup({ onDone, onSkip }) {
     primeSpeech(); // must run inside this tap for iOS
     setVoice('testing');
     setVoiceMessage('');
-    testSpeechPlayback('مرحباً، أنا مساعدك Smart.z. إذا سمعتني فاضغط «سمعت الصوت».')
+    testVoice('مرحباً، أنا مساعدك سمارت زد. إذا سمعتني فاضغط «سمعت الصوت».')
       .then((result) => {
         if (result.success) {
           setVoice('asking');
