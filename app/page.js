@@ -4,6 +4,16 @@ import { useEffect, useRef, useState } from 'react';
 import AssistantOrb from '../components/AssistantOrb';
 import VoiceWave from '../components/VoiceWave';
 import LocalDataPanel from '../components/LocalDataPanel';
+import FilesPanel from '../components/FilesPanel';
+import FileIntake from '../components/FileIntake';
+import DocumentsPanel from '../components/DocumentsPanel';
+import StudyPanel from '../components/StudyPanel';
+import { prepareAttachmentContext } from '../lib/attachments';
+import { hasFileAnalysisConsent, latestFile, setFileAnalysisConsent } from '../lib/file-store';
+import { documentToDocx, findDocumentByTitle } from '../lib/documents';
+import { blobToBase64 } from '../lib/file-processing';
+import { templateFromRequest } from '../lib/document-templates';
+import { answerVoiceQuiz, isVoiceQuizActive } from '../lib/voice-quiz';
 import WhatsAppClusterConnection from '../components/WhatsAppClusterConnection';
 import PermissionsSetup, { readSetupState } from '../components/PermissionsSetup';
 import LearningPanel from '../components/LearningPanel';
@@ -31,7 +41,7 @@ import {
   preloadArabicVoice,
   testSpeechPlayback,
 } from '../lib/tts';
-import { configureSpeech, primeSpeech } from '../lib/speech';
+import { configureSpeech, primeSpeech, speak as speakReply } from '../lib/speech';
 import VoiceSettings from '../components/VoiceSettings';
 import SendActionBanner from '../components/SendActionBanner';
 import SendSettings from '../components/SendSettings';
@@ -47,6 +57,9 @@ const MENU_SECTIONS = [
   { id: 'learning', label: 'التعلم والتخصيص' },
   { id: 'notes', label: 'ملاحظاتي' },
   { id: 'tasks', label: 'مهامي' },
+  { id: 'files', label: 'ملفاتي' },
+  { id: 'documents', label: 'مستنداتي' },
+  { id: 'study', label: 'المذاكرة' },
   { id: 'audio', label: 'الصوت' },
   { id: 'apps', label: 'ربط التطبيقات' },
   { id: 'privacy', label: 'الخصوصية والبيانات' },
@@ -147,6 +160,12 @@ export default function Home() {
   const [lastTranscript, setLastTranscript] = useState('');
   const [setupOpen, setSetupOpen] = useState(false);
   const [learningVersion, setLearningVersion] = useState(0);
+  const [attachment, setAttachment] = useState(null); // a file from "ملفاتي" the next questions are about
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [documentTemplateRequest, setDocumentTemplateRequest] = useState(null);
+  const [studyFileId, setStudyFileId] = useState(null);
+  const attachmentRef = useRef(null);
+  const intakeRef = useRef(null);
   const audioFlowRef = useRef(null);
   const pressStartedAtRef = useRef(0);
   const micLevelRef = useRef(0); // written by the recorder ~10x/s, read by the wave without re-rendering
@@ -463,6 +482,47 @@ export default function Home() {
     return error ? null : data.session?.access_token ?? null;
   }
 
+  useEffect(() => { attachmentRef.current = attachment; }, [attachment]);
+
+  // Context for a question about a file: the attached one, or the latest when the question says "الملف".
+  async function prepareAttachment(question) {
+    let file = attachmentRef.current;
+    if (!file && /(آخر|اخر|الأخير|الاخير)\s*ملف|الملف|المستند المرفق/.test(question)) file = await latestFile();
+    if (!file) return null;
+    if (!hasFileAnalysisConsent()) {
+      const allowed = window.confirm('سيُرسل محتوى هذا الملف (أو الصفحات المتعلقة بسؤالك فقط) إلى مزوّد الذكاء الاصطناعي للتحليل، ولا تحفظه Smart.z. موافق؟ (لن نسألك مرة أخرى)');
+      if (!allowed) throw new Error('لم يُرسل الملف. يمكنك السؤال دون إرفاق ملف.');
+      setFileAnalysisConsent(true);
+    }
+    return prepareAttachmentContext(file.id, question);
+  }
+
+  function say(text) {
+    setReply(text);
+    speakReply(text).catch(() => {});
+  }
+
+  /** Utterances handled on the device without the assistant: quiz answers, "تراجع", "اكتب لي عقد". */
+  function interceptLocally(text) {
+    if (isVoiceQuizActive()) {
+      say(answerVoiceQuiz(text) || '');
+      return true;
+    }
+    if (isCancelCommand(text) && cancelPendingSend()) {
+      setReply('ألغيت الإرسال.');
+      return true;
+    }
+    const template = templateFromRequest(text);
+    if (template) {
+      setDocumentTemplateRequest(template.id);
+      setActiveSection('documents');
+      setMenuOpen(true);
+      say(`فتحت لك قالب ${template.title}. أجب على الأسئلة وسأكتب المسودة.`);
+      return true;
+    }
+    return false;
+  }
+
   // First run on this device: ask for permissions and prove the voice plays.
   useEffect(() => {
     if (!customerDataReady) return;
@@ -476,6 +536,12 @@ export default function Home() {
     configureSpeech({ getAccessToken });
     configureSendActions({
       getAccessToken,
+      resolveAttachment: async (action) => {
+        const doc = await findDocumentByTitle(action.attachDocument);
+        if (!doc) return null;
+        const file = documentToDocx(doc);
+        return { data: await blobToBase64(file), fileName: file.name, mimetype: file.type };
+      },
       onResult: (result) => {
         if (!result.ok) setAudioPlaybackError(result.error?.message || result.data?.error || 'تعذر إرسال رسالة واتساب.');
       },
@@ -488,13 +554,8 @@ export default function Home() {
       }),
       getContext: getAssistantContext,
       onAction: queueSend,
-      interceptTranscript: (text) => {
-        if (isCancelCommand(text) && cancelPendingSend()) {
-          setReply('ألغيت الإرسال.');
-          return true;
-        }
-        return false;
-      },
+      interceptTranscript: (text) => interceptLocally(text),
+      prepareAttachment,
       onTurnComplete: () => {
         // Runs in the background; learning must never slow down or break a conversation.
         learnFromRecentConversation({ getAccessToken })
@@ -564,8 +625,8 @@ export default function Home() {
   async function sendMessage(text) {
     const audioFlow = audioFlowRef.current;
     if (!text.trim() || customerAccess.status !== 'active' || !audioFlow) return;
-    if (isCancelCommand(text) && cancelPendingSend()) {
-      setReply('ألغيت الإرسال.');
+    if (interceptLocally(text.trim())) {
+      setLastTranscript(text.trim());
       return;
     }
     setLoading(true);
@@ -936,6 +997,26 @@ export default function Home() {
 
               <SendActionBanner />
 
+              {attachment && (
+                <div className="mx-4 mb-2 flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/5 px-3 py-2 text-xs">
+                  <span className="text-gold">📎</span>
+                  <span className="min-w-0 flex-1 truncate text-text-primary" dir="auto">{attachment.name}</span>
+                  <span className="text-text-secondary">اسأل عنه بالكتابة أو الصوت</span>
+                  <button type="button" aria-label="إزالة المرفق" onClick={() => setAttachment(null)} className="px-1 text-text-secondary hover:text-text-primary">×</button>
+                </div>
+              )}
+              {attachMenuOpen && (
+                <div className="mx-4 mb-2 grid grid-cols-4 gap-1.5">
+                  {[['camera', 'تصوير'], ['gallery', 'صورة'], ['files', 'ملف']].map(([kind, label]) => (
+                    <button key={kind} type="button" onClick={() => { setAttachMenuOpen(false); intakeRef.current?.open(kind); }}
+                      className="min-h-9 rounded-md border border-base-border bg-base-card text-xs text-text-primary">{label}</button>
+                  ))}
+                  <button type="button" onClick={() => { setAttachMenuOpen(false); setActiveSection('files'); setMenuOpen(true); }}
+                    className="min-h-9 rounded-md border border-base-border bg-base-card text-xs text-text-primary">من ملفاتي</button>
+                </div>
+              )}
+              <FileIntake ref={intakeRef} onSaved={(record) => setAttachment(record)} onError={setAudioPlaybackError} />
+
               {/* شريط الإدخال */}
               <form
                 onSubmit={(e) => {
@@ -946,11 +1027,20 @@ export default function Home() {
                 }}
                 className="flex items-center gap-2 px-4 py-3 border-t border-base-border"
               >
+                <button
+                  type="button"
+                  aria-label="إرفاق ملف أو صورة"
+                  aria-expanded={attachMenuOpen}
+                  onClick={() => setAttachMenuOpen((open) => !open)}
+                  className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full border border-base-border text-text-secondary hover:text-text-primary"
+                >
+                  📎
+                </button>
                 <input
                   type="text"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  placeholder="اسأل المساعد أي شيء"
+                  placeholder={attachment ? 'اسأل عن الملف المرفق' : 'اسأل المساعد أي شيء'}
                   className="flex-1 bg-base-card border border-base-border text-text-primary rounded-lg h-10 px-3 text-sm text-right"
                 />
                 <button
@@ -1393,6 +1483,19 @@ export default function Home() {
                       notificationStatus={taskNotificationStatus}
                       onNotificationStatusChange={setTaskNotificationStatus}
                     />
+                ) : activeSection === 'files' ? (
+                  <FilesPanel
+                    onAttach={(file) => { setAttachment(file); setMenuOpen(false); setActiveSection(null); }}
+                    onStudy={(file) => { setStudyFileId(file.id); setActiveSection('study'); }}
+                  />
+                ) : activeSection === 'documents' ? (
+                  <DocumentsPanel
+                    getAccessToken={getAccessToken}
+                    initialTemplateId={documentTemplateRequest}
+                    onConsumedInitial={() => setDocumentTemplateRequest(null)}
+                  />
+                ) : activeSection === 'study' ? (
+                  <StudyPanel getAccessToken={getAccessToken} initialFileId={studyFileId} />
                 ) : activeSection === 'audio' ? (
                   <div className="space-y-5">
                     <div>

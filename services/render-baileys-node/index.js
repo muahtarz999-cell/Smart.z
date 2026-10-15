@@ -333,7 +333,7 @@ async function handleIncoming(message) {
 // ---------------------------------------------------------------- HTTP
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '8mb' })); // documents sent from the app arrive as base64
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
@@ -439,16 +439,25 @@ app.get('/api/contacts/search', (req, res) => {
 });
 
 app.post('/api/send', async (req, res) => {
-  const { remoteJid, text } = req.body || {};
-  if (typeof remoteJid !== 'string' || typeof text !== 'string' || !text.trim()) {
-    return res.status(400).json({ success: false, error: 'Missing remoteJid or text' });
+  const { remoteJid, text, document } = req.body || {};
+  const hasText = typeof text === 'string' && text.trim();
+  const hasDocument = document && typeof document.data === 'string';
+  if (typeof remoteJid !== 'string' || (!hasText && !hasDocument)) {
+    return res.status(400).json({ success: false, error: 'Missing remoteJid, text or document' });
   }
   if (!node.sock || node.status !== 'CONNECTED') {
     return res.status(503).json({ success: false, error: 'NOT_CONNECTED' });
   }
   try {
     await node.sock.sendPresenceUpdate('composing', remoteJid).catch(() => {});
-    const sent = await node.sock.sendMessage(remoteJid, { text: text.slice(0, 4096) });
+    const sent = hasDocument
+      ? await node.sock.sendMessage(remoteJid, {
+        document: Buffer.from(document.data, 'base64'),
+        fileName: String(document.fileName || 'document').slice(0, 120),
+        mimetype: String(document.mimetype || 'application/octet-stream'),
+        caption: hasText ? text.slice(0, 1024) : undefined,
+      })
+      : await node.sock.sendMessage(remoteJid, { text: text.slice(0, 4096) });
     await node.sock.sendPresenceUpdate('paused', remoteJid).catch(() => {});
     return res.json({ success: true, messageId: sent?.key?.id || null });
   } catch (error) {

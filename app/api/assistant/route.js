@@ -38,6 +38,7 @@ export async function POST(request) {
       // Present only when the user consented to learning; sanitised and size-limited inside.
       profile: body.profile,
       memories: body.memories,
+      documentContext: body.documentContext, // passages from a local file, chosen on the device
       tools: node ? [WHATSAPP_SEND_TOOL] : [],
     });
 

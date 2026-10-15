@@ -16,7 +16,14 @@ export async function POST(request) {
   const text = typeof body?.text === 'string' ? body.text.trim().slice(0, 4000) : '';
   const recipients = (Array.isArray(body?.recipients) ? body.recipients : [])
     .filter((r) => typeof r?.jid === 'string' && JID.test(r.jid)).slice(0, 50);
-  if (!text || !recipients.length) return json({ success: false, error: 'نص الرسالة أو المستلمون غير صالحين.' }, 400);
+  const document = body?.document && typeof body.document.data === 'string' && body.document.data.length <= 7_000_000
+    ? {
+      data: body.document.data,
+      fileName: String(body.document.fileName || 'مستند.docx').slice(0, 120),
+      mimetype: String(body.document.mimetype || 'application/octet-stream').slice(0, 120),
+    }
+    : null;
+  if ((!text && !document) || !recipients.length) return json({ success: false, error: 'نص الرسالة أو المستلمون غير صالحين.' }, 400);
 
   const individuals = recipients.filter((r) => !r.jid.endsWith('@g.us')).length;
   if (individuals > MAX_RECIPIENTS_WITHOUT_MANUAL_CONFIRMATION && body.manualConfirmation !== true) {
@@ -30,7 +37,7 @@ export async function POST(request) {
   const results = [];
   for (const recipient of recipients) {
     try {
-      const result = await callNode(node, '/api/send', { method: 'POST', body: { remoteJid: recipient.jid, text }, timeoutMs: 20_000 });
+      const result = await callNode(node, '/api/send', { method: 'POST', body: { remoteJid: recipient.jid, text, document }, timeoutMs: 30_000 });
       results.push({ jid: recipient.jid, ok: result.ok, error: result.ok ? undefined : result.data?.error });
     } catch {
       results.push({ jid: recipient.jid, ok: false, error: 'NODE_UNREACHABLE' });

@@ -28,7 +28,7 @@
 | `GET /api/connect?method=qr` | يعيد آخر رمز QR، أو `202 pending` أثناء التجهيز |
 | `GET /api/connect?method=pairing_code&phoneNumber=9665…` | يعيد رمز اقتران من 8 خانات |
 | `POST /api/reset` | تسجيل خروج ومسح الجلسة بالكامل |
-| `POST /api/send` | إرسال رسالة نصية `{ remoteJid, text }` (للأوامر الصوتية) |
+| `POST /api/send` | إرسال رسالة `{ remoteJid, text }` أو ملف `{ remoteJid, document: { data (base64), fileName, mimetype }, text? }` |
 | `GET /api/contacts/search?q=أحمد&groups=0` | البحث عن جهة اتصال أو مجموعة بالاسم أو الرقم |
 
 ## الرسائل الصوتية
