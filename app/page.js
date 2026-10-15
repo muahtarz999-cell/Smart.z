@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import AssistantOrb from '../components/AssistantOrb';
+import VoiceWave from '../components/VoiceWave';
 import LocalDataPanel from '../components/LocalDataPanel';
 import WhatsAppClusterConnection from '../components/WhatsAppClusterConnection';
 import PermissionsSetup, { readSetupState } from '../components/PermissionsSetup';
@@ -148,6 +149,7 @@ export default function Home() {
   const [learningVersion, setLearningVersion] = useState(0);
   const audioFlowRef = useRef(null);
   const pressStartedAtRef = useRef(0);
+  const micLevelRef = useRef(0); // written by the recorder ~10x/s, read by the wave without re-rendering
   const profileRef = useRef(DEFAULT_PROFILE);
   const [customerDataUserId, setCustomerDataUserId] = useState(null);
   const skipProfileSaveRef = useRef(false);
@@ -155,7 +157,10 @@ export default function Home() {
 
   const customerDataReady = Boolean(authUser?.id && customerDataUserId === authUser.id);
   const orbSize = expanded ? 190 : 128;
-  const panelMaxWidth = expanded ? 420 : 340;
+  // During a conversation the orb becomes a vibrating line and the text gets the space.
+  const conversationActive = Boolean(reply || lastTranscript || loading)
+    || ['preparing', 'listening', 'transcribing', 'thinking', 'speaking'].includes(orbState);
+  const panelMaxWidth = conversationActive ? 480 : expanded ? 420 : 340;
 
   useEffect(() => {
     let active = true;
@@ -497,6 +502,7 @@ export default function Home() {
           .catch((error) => console.warn('[Learning]', error?.message));
       },
       onStateChange: (state) => setOrbState(state),
+      onLevel: (level) => { micLevelRef.current = level; },
       onTranscript: (text) => setLastTranscript(text),
       onReply: (text) => {
         setReply(text);
@@ -564,6 +570,7 @@ export default function Home() {
     }
     setLoading(true);
     setReply('');
+    setLastTranscript(text.trim());
     setAudioPlaybackError('');
     try {
       await audioFlow.respondTo(text.trim(), { channel: 'text' });
@@ -802,10 +809,12 @@ export default function Home() {
         <PermissionsSetup onDone={() => setSetupOpen(false)} onSkip={() => setSetupOpen(false)} />
       )}
       <div
-        className="w-full transition-all duration-300"
+        className="w-full min-w-0 transition-all duration-300"
         style={{ maxWidth: panelMaxWidth }}
       >
-        <div className="bg-base-panel rounded-2xl border border-base-border overflow-hidden flex flex-col min-h-[420px]">
+        <div className={`bg-base-panel rounded-2xl border border-base-border overflow-hidden flex flex-col transition-all duration-300 ${
+          conversationActive ? 'h-[min(86dvh,720px)]' : 'min-h-[420px]'
+        }`}>
           {/* الشريط العلوي */}
           <div className="flex items-center justify-between px-4 py-3">
             <button
@@ -846,26 +855,57 @@ export default function Home() {
 
           {customerAccess.status === 'active' ? (
             <>
-              {/* الكرة والترحيب */}
-              <div className="flex-1 flex flex-col items-center justify-center px-6 py-6">
-                <AssistantOrb size={orbSize} listening={['listening', 'speaking', 'thinking', 'transcribing'].includes(orbState)} />
+              {conversationActive ? (
+                // Conversation: a vibrating line on top, the words get the rest of the space.
+                <div className="flex min-h-0 flex-1 flex-col px-5 pt-3">
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <VoiceWave state={orbState} levelRef={micLevelRef} height={48} />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { audioFlowRef.current?.cancelTurn(); setReply(''); setLastTranscript(''); setAudioPlaybackError(''); }}
+                      className="shrink-0 rounded-md px-2 py-1 text-[11px] text-text-secondary hover:bg-base-card hover:text-text-primary"
+                    >
+                      محادثة جديدة
+                    </button>
+                  </div>
 
-                <p className="text-text-primary text-base font-medium mt-5">
-                  أهلًا بك
-                </p>
-                {lastTranscript && (
-                  <p className="mt-2 max-w-xs text-center text-[11px] leading-5 text-text-secondary/80" dir="auto">
-                    «{lastTranscript}»
-                  </p>
-                )}
-                <p className="text-text-secondary text-xs mt-1 text-center whitespace-pre-line" dir="auto">
-                  {reply || (orbState === 'listening' ? 'تحدث الآن، ثم اضغط «إرسال»' : 'اضغط الزر وتحدث')}
-                </p>
-                {audioPlaybackError && (
-                  <p role="status" className="mt-2 max-w-xs text-center text-xs leading-5 text-amber-300">
-                    {audioPlaybackError}
-                  </p>
-                )}
+                  <div className="mt-2 min-h-0 flex-1 space-y-4 overflow-y-auto pb-3">
+                    {lastTranscript && (
+                      <p className="mr-auto max-w-[85%] rounded-2xl rounded-tl-sm bg-base-card px-4 py-2 text-sm leading-7 text-text-secondary" dir="auto">
+                        {lastTranscript}
+                      </p>
+                    )}
+                    {reply ? (
+                      <p className="whitespace-pre-line text-[17px] leading-8 text-text-primary" dir="auto">{reply}</p>
+                    ) : (
+                      <p className="text-sm leading-7 text-text-secondary">
+                        {({
+                          preparing: 'جارٍ فتح الميكروفون…',
+                          listening: 'أسمعك… اضغط «إرسال» عند الانتهاء',
+                          transcribing: 'أكتب ما قلته…',
+                          thinking: 'أفكر في الرد…',
+                        })[orbState] || (loading ? 'أفكر في الرد…' : '')}
+                      </p>
+                    )}
+                    {audioPlaybackError && (
+                      <p role="status" className="text-xs leading-5 text-amber-300">{audioPlaybackError}</p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center px-6 py-6">
+                  <AssistantOrb size={orbSize} />
+                  <p className="text-text-primary text-base font-medium mt-5">أهلًا بك</p>
+                  <p className="text-text-secondary text-xs mt-1 text-center">اضغط الزر وتحدث، أو اكتب سؤالك</p>
+                  {audioPlaybackError && (
+                    <p role="status" className="mt-2 max-w-xs text-center text-xs leading-5 text-amber-300">{audioPlaybackError}</p>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-col items-center px-6 pb-3">
                 <button
                   type="button"
                   onPointerDown={onTalkPress}
@@ -876,7 +916,7 @@ export default function Home() {
                   }}
                   disabled={orbState === 'transcribing' || orbState === 'thinking' || orbState === 'preparing'}
                   aria-pressed={orbState === 'listening'}
-                  className={`mt-4 min-h-12 min-w-[180px] touch-none select-none rounded-full px-5 text-sm font-semibold transition-colors disabled:cursor-wait disabled:opacity-60 ${
+                  className={`${conversationActive ? 'mt-1' : 'mt-4'} min-h-12 min-w-[180px] touch-none select-none rounded-full px-5 text-sm font-semibold transition-colors disabled:cursor-wait disabled:opacity-60 ${
                     orbState === 'listening' ? 'bg-red-500 text-white' : 'bg-gold text-base-bg'
                   }`}
                   style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
@@ -889,7 +929,7 @@ export default function Home() {
                     speaking: 'إيقاف وتحدث',
                   })[orbState] || 'اضغط وتحدث'}
                 </button>
-                <p className="mt-2 text-[11px] text-text-secondary">
+                <p className={`mt-2 text-[11px] text-text-secondary ${conversationActive && orbState !== 'listening' ? 'hidden' : ''}`}>
                   {orbState === 'listening' ? 'اضغط مرة أخرى للإرسال، أو اترك الزر إن كنت تضغط باستمرار' : 'ضغطة للبدء وضغطة للإرسال'}
                 </p>
               </div>
