@@ -172,6 +172,7 @@ async function startSocket() {
         const code = lastDisconnect?.error?.output?.statusCode;
         closeSocket();
         node.qr = null;
+        node.pairing = null; // a pairing code belongs to the socket that issued it
 
         if (code === DisconnectReason.loggedOut) {
           // Unlinked from the phone: wipe the dead credentials so a new QR can be issued.
