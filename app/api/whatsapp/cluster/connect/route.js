@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server';
+import { json } from '../../../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
-import { allocateStickyNode, proxyToNode } from '../../../../../lib/whatsapp-cluster';
+import { allocateNode, callNode, ClusterError, CLUSTER_MESSAGES } from '../../../../../lib/whatsapp-cluster';
 
 export const runtime = 'edge';
 
@@ -9,68 +9,49 @@ export async function GET(request) {
   if (!access.ok) return customerAccessResponse(access);
 
   const { searchParams } = new URL(request.url);
-  const method = searchParams.get('method') || 'qr';
-  const phoneNumber = searchParams.get('phoneNumber') || '';
-
-  if (method === 'pairing_code' && !phoneNumber) {
-    return NextResponse.json(
-      { success: false, error: 'يلزم توفير رقم الهاتف لطلب رمز الاقتران.' },
-      { status: 400, headers: { 'Cache-Control': 'no-store' } }
-    );
+  const method = searchParams.get('method') === 'pairing_code' ? 'pairing_code' : 'qr';
+  const phoneNumber = (searchParams.get('phoneNumber') || '').replace(/\D/g, '');
+  if (method === 'pairing_code' && (phoneNumber.length < 9 || phoneNumber.length > 15)) {
+    return json({ success: false, error: 'اكتب رقم الهاتف مع رمز الدولة، مثل 9665xxxxxxxx.' }, 400);
   }
 
-  // 1. Allocate or retrieve assigned sticky node for this tenant
-  let targetNode;
+  let node;
   try {
-    const allocation = await allocateStickyNode(access.user.id, access.client);
-    targetNode = allocation.node;
-  } catch (err) {
-    console.error('[WhatsApp Cluster Router] Node allocation failed:', err);
-    if (err?.code === 'ALL_CLUSTER_NODES_OCCUPIED') {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'جميع قنوات خوادم الواتساب (5/5) مشغولة حالياً بمشتركين آخرين. يرجى التواصل مع الإدارة لزيادة السعة.',
-          code: 'ALL_NODES_OCCUPIED',
-        },
-        { status: 503, headers: { 'Cache-Control': 'no-store' } }
-      );
+    ({ node } = await allocateNode(access.client, access.user.id));
+  } catch (error) {
+    const code = error instanceof ClusterError ? error.code : 'CLAIM_FAILED';
+    console.error('[WhatsApp personal] allocation failed', { code });
+    return json({ success: false, code, error: CLUSTER_MESSAGES[code] || CLUSTER_MESSAGES.CLAIM_FAILED },
+      error instanceof ClusterError ? error.status : 500);
+  }
+
+  try {
+    const result = await callNode(node, '/api/connect', {
+      query: { method, phoneNumber: method === 'pairing_code' ? phoneNumber : undefined },
+      timeoutMs: 25_000,
+    });
+    const data = result.data && typeof result.data === 'object' ? result.data : {};
+
+    if (data.connected) {
+      await access.client.from('whatsapp_tenant_nodes')
+        .update({ status: 'connected', phone_number: data.phone || null, last_status_check: new Date().toISOString() })
+        .eq('user_id', access.user.id);
     }
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'تعذر تحديد خادم الواتساب المخصص لحسابك.',
-        details: err?.message,
-      },
-      { status: 500, headers: { 'Cache-Control': 'no-store' } }
-    );
-  }
 
-  // 2. Forward connect request to the tenant's dedicated node
-  try {
-    const proxyResult = await proxyToNode(targetNode, '/api/connect', {
-      method,
-      phoneNumber,
-    });
-
-    const responseBody = typeof proxyResult.data === 'object' && proxyResult.data !== null
-      ? { ...proxyResult.data, nodeId: targetNode.id }
-      : { success: proxyResult.ok, data: proxyResult.data, nodeId: targetNode.id };
-
-    return NextResponse.json(responseBody, {
-      status: proxyResult.status,
-      headers: { 'Cache-Control': 'no-store' },
-    });
-  } catch (proxyError) {
-    console.error(`[WhatsApp Cluster Router] Proxy error to Node ${targetNode.id}:`, proxyError);
-    return NextResponse.json(
-      {
-        success: false,
-        error: `تعذر الاتصال بخادم الواتساب المخصص (خادم رقم ${targetNode.id}).`,
-        details: proxyError?.message,
-      },
-      { status: 502, headers: { 'Cache-Control': 'no-store' } }
-    );
+    return json({
+      success: Boolean(data.success),
+      pending: Boolean(data.pending),
+      type: data.type || null,
+      qr: data.qr || null,
+      pairingCode: data.pairingCode || null,
+      status: data.status || 'UNKNOWN',
+      connected: Boolean(data.connected),
+      phone: data.phone || null,
+      error: data.success ? undefined : (data.error || 'تعذر تجهيز الربط على الخادم.'),
+      nodeId: node.id,
+    }, result.status);
+  } catch {
+    // Render free instances sleep; the first request wakes them and takes up to a minute.
+    return json({ success: true, pending: true, status: 'WAKING', nodeId: node.id }, 202);
   }
 }
-

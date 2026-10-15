@@ -1,82 +1,53 @@
-import { NextResponse } from 'next/server';
-import { generateAssistantReply, AssistantResponseError } from '../../../../../lib/assistant-response';
-import { getConfiguredClusterNodes } from '../../../../../lib/whatsapp-cluster';
+import { json } from '../../../../../lib/api-response';
+import { generateAssistantReply } from '../../../../../lib/assistant-response';
+import { createServiceClient, getClusterNode } from '../../../../../lib/whatsapp-cluster';
 
 export const runtime = 'edge';
 
-function verifyClusterAuthentication(request, nodeId) {
-  const authorization = request.headers.get('authorization') || '';
-  const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1] || request.headers.get('x-api-key') || '';
-
-  if (!token) return false;
-
-  const configuredNodes = getConfiguredClusterNodes();
-  if (nodeId) {
-    const matchedNode = configuredNodes.find((n) => n.id === Number(nodeId));
-    if (matchedNode && matchedNode.key && matchedNode.key === token) {
-      return true;
-    }
-  }
-
-  // Fallback: check if the token matches any configured cluster node key
-  return configuredNodes.some((n) => n.key && n.key === token);
+function sameToken(left, right) {
+  const a = new TextEncoder().encode(left);
+  const b = new TextEncoder().encode(right);
+  let difference = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) difference |= (a[i] || 0) ^ (b[i] || 0);
+  return difference === 0;
 }
 
+// Called by a Render node for every incoming personal WhatsApp text.
 export async function POST(request) {
-  let body;
+  const body = await request.json().catch(() => null);
+  const node = getClusterNode(body?.nodeId);
+  const token = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!node || !token || !sameToken(token, node.key)) {
+    return json({ success: false, error: 'UNAUTHORIZED_CLUSTER_NODE' }, 401);
+  }
+
+  const text = typeof body.text === 'string' ? body.text.trim().slice(0, 4000) : '';
+  if (!text) return json({ success: false, error: 'EMPTY_TEXT_MESSAGE' }, 400);
+
+  const database = createServiceClient();
+  if (!database) return json({ success: false, error: 'DATABASE_CONFIGURATION' }, 503);
+
+  // Who owns this node, and do they want automatic replies?
+  const { data: tenant, error } = await database
+    .from('whatsapp_tenant_nodes')
+    .select('user_id,auto_reply_enabled,status')
+    .eq('node_id', node.id)
+    .maybeSingle();
+  if (error) return json({ success: false, error: 'TENANT_LOOKUP_FAILED' }, 503);
+  if (!tenant || tenant.auto_reply_enabled !== true) return json({ success: true, reply: null, skipped: 'AUTO_REPLY_OFF' });
+
+  const { data: customer } = await database
+    .from('customer_registry')
+    .select('*')
+    .eq('user_id', tenant.user_id)
+    .maybeSingle();
+  if (!customer || customer.is_active === false) return json({ success: true, reply: null, skipped: 'CUSTOMER_INACTIVE' });
+
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { success: false, error: 'INVALID_JSON_PAYLOAD' },
-      { status: 400, headers: { 'Cache-Control': 'no-store' } }
-    );
-  }
-
-  const { nodeId, remoteJid, text, senderName, messageId } = body || {};
-
-  // 1. Authenticate that the request comes from an authorized cluster node
-  if (!verifyClusterAuthentication(request, nodeId)) {
-    return NextResponse.json(
-      { success: false, error: 'UNAUTHORIZED_CLUSTER_NODE' },
-      { status: 401, headers: { 'Cache-Control': 'no-store' } }
-    );
-  }
-
-  // 2. Validate message payload
-  if (!text || typeof text !== 'string' || !text.trim()) {
-    return NextResponse.json(
-      { success: false, error: 'EMPTY_TEXT_MESSAGE' },
-      { status: 400, headers: { 'Cache-Control': 'no-store' } }
-    );
-  }
-
-  // 3. Generate AI Assistant Reply via Groq without storing chat logs
-  try {
-    const promptText = text.trim();
-    const reply = await generateAssistantReply(promptText);
-
-    return NextResponse.json(
-      {
-        success: true,
-        reply,
-        nodeId: nodeId || null,
-        messageId: messageId || null,
-      },
-      { headers: { 'Cache-Control': 'no-store' } }
-    );
-  } catch (error) {
-    console.error('[WhatsApp Cluster Message Pipeline] Error generating reply:', error);
-    const errorCode = error instanceof AssistantResponseError ? error.code : 'ASSISTANT_UNAVAILABLE';
-
-    return NextResponse.json(
-      {
-        success: false,
-        error: errorCode,
-        message: 'تعذر معالجة الرد الذكي في الوقت الحالي.',
-      },
-      { status: 502, headers: { 'Cache-Control': 'no-store' } }
-    );
+    const reply = await generateAssistantReply(text, { channel: 'whatsapp' });
+    return json({ success: true, reply, messageId: body.messageId || null });
+  } catch (replyError) {
+    console.error('[WhatsApp personal] reply failed', { code: replyError?.code || 'UNEXPECTED' });
+    return json({ success: false, error: 'ASSISTANT_UNAVAILABLE' }, 502);
   }
 }
-

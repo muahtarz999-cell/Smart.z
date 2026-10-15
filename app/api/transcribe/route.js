@@ -1,91 +1,66 @@
-﻿export const runtime = 'edge';
-
-import { NextResponse } from 'next/server';
+import { json } from '../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
 
-export async function POST(req) {
-  const access = await requireCustomerRegistered(req);
+export const runtime = 'edge';
+
+const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
+const EXTENSIONS = { 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/ogg': 'ogg' };
+
+export async function POST(request) {
+  const access = await requireCustomerRegistered(request);
   if (!access.ok) return customerAccessResponse(access);
 
-  try {
-    // ط§ط³طھظ‚ط¨ظ„ ط§ظ„طµظˆطھ ظ…ظ† ط§ظ„ط¹ظ…ظٹظ„
-    const formData = await req.formData();
-    const audioBlob = formData.get('audio');
-
-    if (!audioBlob) {
-      return NextResponse.json(
-        { error: true, message: 'No audio data provided.' },
-        { status: 400 }
-      );
-    }
-
-    // طھط­ظ‚ظ‚ ظ…ظ† ظˆط¬ظˆط¯ Groq API Key
-    const groqApiKey = process.env.GROQ_API_KEY;
-    if (!groqApiKey) {
-      console.error('[Transcribe] Missing GROQ_API_KEY');
-      return NextResponse.json(
-        { error: true, message: 'API key missing or authentication failed.' },
-        { status: 500 }
-      );
-    }
-
-    // ط­ظˆظ„ ط§ظ„ظ€ blob ط¥ظ„ظ‰ Buffer
-
-    // ط£ظ†ط´ط¦ FormData ظ„ظ„ط±ظپط¹ ط¥ظ„ظ‰ Groq
-    const groqFormData = new FormData();
-    groqFormData.append('file', audioBlob, 'audio.wav');
-    groqFormData.append('model', 'whisper-large-v3');
-    groqFormData.append('language', 'ar');
-
-    // ط£ط±ط³ظ„ ط§ظ„ط·ظ„ط¨ ط¥ظ„ظ‰ Groq
-    const groqResponse = await fetch(
-      'https://api.groq.com/openai/v1/audio/transcriptions',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${groqApiKey}`,
-        },
-        body: groqFormData,
-      }
-    );
-
-    // طھط¹ط§ظ…ظ„ ظ…ط¹ ط§ظ„ط£ط®ط·ط§ط،
-    if (!groqResponse.ok) {
-      const errorData = await groqResponse.json().catch(() => ({}));
-      console.error(`[Transcribe] Groq error ${groqResponse.status}:`, errorData);
-
-      if (groqResponse.status === 401 || groqResponse.status === 403) {
-        return NextResponse.json(
-          { error: true, message: 'API key missing or authentication failed.' },
-          { status: 401 }
-        );
-      }
-
-      if (groqResponse.status >= 500) {
-        return NextResponse.json(
-          { error: true, message: 'API key missing or authentication failed.' },
-          { status: 500 }
-        );
-      }
-
-      return NextResponse.json(
-        {
-          error: true,
-          message: errorData.error?.message || 'Transcription failed.',
-        },
-        { status: groqResponse.status }
-      );
-    }
-
-    const result = await groqResponse.json();
-    const text = result.text || '';
-
-    return NextResponse.json({ text });
-  } catch (err) {
-    console.error('[Transcribe] Unexpected error:', err);
-    return NextResponse.json(
-      { error: true, message: 'API key missing or authentication failed.' },
-      { status: 500 }
-    );
+  const groqApiKey = process.env.GROQ_API_KEY;
+  if (!groqApiKey) {
+    console.error('[Transcribe] GROQ_API_KEY is not set');
+    return json({ error: true, code: 'NOT_CONFIGURED', message: 'خدمة تحويل الصوت إلى نص غير مضبوطة.' }, 503);
   }
+
+  let audio;
+  try {
+    audio = (await request.formData()).get('audio');
+  } catch {
+    return json({ error: true, code: 'BAD_REQUEST', message: 'لم يصل ملف الصوت.' }, 400);
+  }
+  if (!audio || typeof audio === 'string' || !audio.size) {
+    return json({ error: true, code: 'NO_AUDIO', message: 'لم يصل ملف الصوت.' }, 400);
+  }
+  if (audio.size > MAX_AUDIO_BYTES) {
+    return json({ error: true, code: 'TOO_LARGE', message: 'التسجيل أطول من المسموح.' }, 413);
+  }
+
+  // Whisper identifies the format from the file name, so it must match the real type.
+  const type = String(audio.type || 'audio/wav').split(';')[0];
+  const upstream = new FormData();
+  upstream.append('file', audio, `audio.${EXTENSIONS[type] || 'wav'}`);
+  upstream.append('model', 'whisper-large-v3');
+  upstream.append('language', 'ar');
+  upstream.append('response_format', 'json');
+
+  let response;
+  try {
+    response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${groqApiKey}` },
+      body: upstream,
+      signal: AbortSignal.timeout(25_000),
+    });
+  } catch {
+    return json({ error: true, code: 'UPSTREAM_TIMEOUT', message: 'تأخرت خدمة تحويل الصوت. أعد المحاولة.' }, 504);
+  }
+
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    console.error('[Transcribe] Groq error', { status: response.status, message: detail?.error?.message });
+    const code = response.status === 401 || response.status === 403 ? 'UPSTREAM_AUTH'
+      : response.status === 429 ? 'UPSTREAM_RATE_LIMIT' : 'UPSTREAM_ERROR';
+    const message = code === 'UPSTREAM_AUTH' ? 'مفتاح خدمة تحويل الصوت غير صالح.'
+      : code === 'UPSTREAM_RATE_LIMIT' ? 'تم تجاوز حد الاستخدام مؤقتاً. أعد المحاولة بعد قليل.'
+        : 'تعذر تحويل الصوت إلى نص.';
+    // 502 for every upstream problem, so the app never mistakes it for an expired login (401).
+    return json({ error: true, code, message }, 502);
+  }
+
+  const result = await response.json().catch(() => ({}));
+  return json({ text: typeof result.text === 'string' ? result.text.trim() : '' });
 }

@@ -141,11 +141,11 @@ async function getCustomerWhatsAppCredentials(database, phoneNumberId) {
 
   const { data: customer, error: customerError } = await database
     .from('customer_registry')
-    .select('user_id')
+    .select('*')
     .eq('user_id', connection.user_id)
     .maybeSingle();
   if (customerError) throw new WebhookError('CUSTOMER_LOOKUP_FAILED');
-  if (!customer) return null;
+  if (!customer || customer.is_active === false) return null;
 
   const { data: secret, error: secretError } = await database
     .from('whatsapp_connection_secrets')
@@ -210,7 +210,7 @@ async function processMessage(database, value, message) {
   const credentials = await getCustomerWhatsAppCredentials(database, phoneNumberId);
   if (!credentials) return;
 
-  const reply = await generateAssistantReply(text.trim());
+  const reply = await generateAssistantReply(text.trim(), { channel: 'whatsapp' });
   await sendWhatsAppText(phoneNumberId, recipient, reply, credentials.accessToken);
 }
 
@@ -301,6 +301,9 @@ export async function POST(request) {
 
   try {
     for (const { value, message } of textMessages) {
+      // Skip backlog older than 5 minutes (Meta redelivers after outages).
+      const sentAt = Number(message.timestamp || 0);
+      if (sentAt && Date.now() / 1000 - sentAt > 300) continue;
       await processOnce(message.id, () => processMessage(database, value, message));
     }
     return response({ status: 'received' });
@@ -312,6 +315,7 @@ export async function POST(request) {
           ? error.code
           : 'UNEXPECTED',
     });
-    return response({ error: 'MESSAGE_PROCESSING_FAILED' }, 500);
+    // Still 200: Meta retries any other status, and each retry would send the customer another reply.
+    return response({ status: 'received', processed: false });
   }
 }

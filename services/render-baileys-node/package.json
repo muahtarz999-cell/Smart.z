@@ -1,18 +1,21 @@
 {
   "name": "smart-z-baileys-node",
-  "version": "1.0.0",
-  "description": "Smart.z Multi-Tenant Baileys Cluster Node for Render",
+  "version": "2.0.0",
+  "description": "Smart.z WhatsApp node (personal path) for Render",
   "main": "index.js",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "check": "node --check index.js && node --check supabase-auth-state.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
     "@whiskeysockets/baileys": "^6.7.9",
-    "cors": "^2.8.5",
     "express": "^4.19.2",
     "pino": "^9.3.2",
     "qrcode": "^1.5.3"
   }
 }
-

@@ -1,45 +1,34 @@
-import { NextResponse } from 'next/server';
+import { json } from '../../../lib/api-response';
 import { AssistantResponseError, generateAssistantReply } from '../../../lib/assistant-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
 
 export const runtime = 'edge';
 
-function errorResponse(message, status) {
-  return NextResponse.json(
-    { error: true, message },
-    { status, headers: { 'Cache-Control': 'no-store' } }
-  );
-}
+const MAX_MESSAGE_CHARACTERS = 4000;
 
 export async function POST(request) {
   const access = await requireCustomerRegistered(request);
   if (!access.ok) return customerAccessResponse(access);
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return errorResponse('Invalid JSON request.', 400);
-  }
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: true, message: 'Invalid JSON request.' }, 400);
 
-  const message = typeof body?.message === 'string' ? body.message.trim() : '';
-  if (!message) return errorResponse('A non-empty message is required.', 400);
+  const message = typeof body.message === 'string' ? body.message.trim().slice(0, MAX_MESSAGE_CHARACTERS) : '';
+  if (!message) return json({ error: true, message: 'A non-empty message is required.' }, 400);
 
   try {
-    const reply = await generateAssistantReply(message);
-    return NextResponse.json(
-      { reply },
-      { headers: { 'Cache-Control': 'no-store' } }
-    );
-  } catch (error) {
-    const configurationError = error instanceof AssistantResponseError
-      && error.code === 'CONFIGURATION';
-    console.error('[Assistant API] Reply generation failed', {
-      code: error instanceof AssistantResponseError ? error.code : 'UNEXPECTED',
+    const reply = await generateAssistantReply(message, {
+      history: body.history, // sanitised inside: last 6 turns, user/assistant only
+      responseStyle: body.responseStyle,
+      language: body.language,
+      channel: body.channel === 'voice' ? 'voice' : 'text',
     });
-    return errorResponse(
-      configurationError ? 'Assistant service is not configured.' : 'Assistant service is temporarily unavailable.',
-      configurationError ? 503 : 502
-    );
+    return json({ reply });
+  } catch (error) {
+    const code = error instanceof AssistantResponseError ? error.code : 'UNEXPECTED';
+    console.error('[Assistant API] Reply generation failed', { code });
+    return code === 'CONFIGURATION'
+      ? json({ error: true, message: 'Assistant service is not configured.' }, 503)
+      : json({ error: true, message: 'Assistant service is temporarily unavailable.' }, 502);
   }
 }

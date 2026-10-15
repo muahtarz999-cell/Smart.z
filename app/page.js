@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import AssistantOrb from '../components/AssistantOrb';
 import LocalDataPanel from '../components/LocalDataPanel';
 import WhatsAppClusterConnection from '../components/WhatsAppClusterConnection';
+import PermissionsSetup, { readSetupState } from '../components/PermissionsSetup';
 import { AudioFlowManager } from '../lib/audio-flow';
 import {
   openInstalledApp,
@@ -24,7 +25,8 @@ import {
   getSpeechDiagnostics,
   isSpeechSupported,
   openSpeechEngineSettings,
-  speak,
+  preloadArabicVoice,
+  primeSpeech,
   testSpeechPlayback,
 } from '../lib/tts';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
@@ -32,10 +34,6 @@ import {
   getTaskReminderStatus,
   synchronizeTaskReminders,
 } from '../lib/task-notifications';
-import {
-  clearWhatsAppSignupState,
-  setWhatsAppSignupPhase,
-} from '../lib/whatsapp-signup-state';
 
 const MENU_SECTIONS = [
   { id: 'profile', label: 'ملفي' },
@@ -118,7 +116,6 @@ export default function Home() {
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
   const [whatsappBusy, setWhatsappBusy] = useState(false);
-  const [whatsappPhase, setWhatsappPhase] = useState('idle');
   const [whatsappConnectionLoading, setWhatsappConnectionLoading] = useState(false);
   const [whatsappError, setWhatsappError] = useState('');
   const [whatsappMetaConnection, setWhatsappMetaConnection] = useState(null);
@@ -138,10 +135,13 @@ export default function Home() {
   const [audioDiagnosticsLoading, setAudioDiagnosticsLoading] = useState(false);
   const [audioPlaybackError, setAudioPlaybackError] = useState('');
   const [audioSetupOpening, setAudioSetupOpening] = useState(false);
-  const [audioStarting, setAudioStarting] = useState(false);
   const [taskNotificationStatus, setTaskNotificationStatus] = useState(null);
-  const [orbState, setOrbState] = useState('idle');
+  const [orbState, setOrbState] = useState('ready');
+  const [lastTranscript, setLastTranscript] = useState('');
+  const [setupOpen, setSetupOpen] = useState(false);
   const audioFlowRef = useRef(null);
+  const pressStartedAtRef = useRef(0);
+  const profileRef = useRef(DEFAULT_PROFILE);
   const [customerDataUserId, setCustomerDataUserId] = useState(null);
   const skipProfileSaveRef = useRef(false);
   const profileEditPendingRef = useRef(false);
@@ -440,44 +440,42 @@ export default function Home() {
     };
   }, [activeSection]);
 
-  // تهيئة تدفق الصوت وبدء الاستماع بعد تفاعل المستخدم
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
+
+  // Always a fresh token: the session refreshes hourly and a captured token goes stale.
+  async function getAccessToken() {
+    if (!supabase) return null;
+    const { data, error } = await supabase.auth.getSession();
+    return error ? null : data.session?.access_token ?? null;
+  }
+
+  // First run on this device: ask for permissions and prove the voice plays.
+  useEffect(() => {
+    if (!customerDataReady) return;
+    if (!readSetupState()) setSetupOpen(true);
+    void preloadArabicVoice();
+  }, [customerDataReady]);
+
   useEffect(() => {
     if (customerAccess.status !== 'active' || !authUser) return undefined;
 
     const audioFlow = new AudioFlowManager({
-      getAccessToken: async () => {
-        const { data, error } = await supabase.auth.getSession();
-        return error ? null : data.session?.access_token ?? null;
-      },
-      onStateChange: (state) => {
-        console.log('[Page] Audio state:', state);
-        setOrbState(state);
-      },
+      getAccessToken,
+      getPreferences: () => ({
+        responseStyle: profileRef.current.responseStyle,
+        language: profileRef.current.language,
+      }),
+      onStateChange: (state) => setOrbState(state),
+      onTranscript: (text) => setLastTranscript(text),
       onReply: (text) => {
         setReply(text);
         setAudioPlaybackError('');
       },
-      onAudioError: (error) => {
-        console.error('[Page] Audio error:', error);
-        if (
-          error?.name === 'SpeechSynthesisError' ||
-          error?.message?.startsWith('تعذر تشغيل الرد الصوتي') ||
-          error?.message?.startsWith('تعذر نطق الرد') ||
-          error?.message?.startsWith('لم يعثر محرك النطق على صوت عربي') ||
-          error?.message?.startsWith('النطق الصوتي غير مدعوم') ||
-          error?.message?.startsWith('واجهة النطق الصوتي غير متاحة') ||
-          error?.message?.startsWith('لم يسمح النظام بتشغيل النطق')
-        ) {
-          setAudioPlaybackError(error.message);
-        } else if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(error?.name)) {
-          setAudioPlaybackError('لم يُسمح باستخدام الميكروفون. اسمح بالوصول إليه من إعدادات الموقع أو التطبيق ثم أعد المحاولة.');
-        } else if (['NotFoundError', 'DevicesNotFoundError'].includes(error?.name)) {
-          setAudioPlaybackError('لم يتم العثور على ميكروفون متاح على هذا الجهاز.');
-        } else if (['NotReadableError', 'TrackStartError'].includes(error?.name)) {
-          setAudioPlaybackError('تعذر تشغيل الميكروفون. تحقق من أنه غير مستخدم في تطبيق آخر ثم أعد المحاولة.');
-        } else {
-          setAudioPlaybackError('تعذر تفعيل الميكروفون. تحقق من اتصال آمن وأذونات الميكروفون ثم أعد المحاولة.');
-        }
+      onError: (error) => {
+        console.error('[Voice]', error);
+        setAudioPlaybackError(error?.message || 'حدث خطأ في المحادثة الصوتية.');
       },
     });
     audioFlowRef.current = audioFlow;
@@ -488,22 +486,29 @@ export default function Home() {
     };
   }, [customerAccess.status, authUser?.id]);
 
-  async function startAudioListening() {
+  // Talk button: a short tap starts recording and a second tap sends;
+  // holding for more than 450 ms sends on release. No pointer capture: the
+  // permission dialog steals the pointer and used to cancel the first press.
+  function onTalkPress(event) {
+    event.preventDefault();
     const audioFlow = audioFlowRef.current;
-    if (!audioFlow || audioStarting || audioFlow.isStarting || audioFlow.isListening) return;
-
-    setAudioStarting(true);
+    if (!audioFlow) return;
     setAudioPlaybackError('');
-    try {
-      const started = await audioFlow.start();
-      if (!started) setOrbState('error');
-    } finally {
-      setAudioStarting(false);
+    if (audioFlow.isRecording) {
+      void audioFlow.endTurn();
+      return;
     }
+    if (audioFlow.isBusy) return;
+    pressStartedAtRef.current = Date.now();
+    void audioFlow.beginTurn(); // synchronous part runs inside the gesture
   }
 
-  function stopAudioListening() {
-    audioFlowRef.current?.stopListening();
+  function onTalkRelease() {
+    const audioFlow = audioFlowRef.current;
+    if (!audioFlow?.isRecording || !pressStartedAtRef.current) return;
+    const heldFor = Date.now() - pressStartedAtRef.current;
+    pressStartedAtRef.current = 0;
+    if (heldFor > 450) void audioFlow.endTurn();
   }
 
   // عند المغادرة، تنظيف الموارد
@@ -522,35 +527,16 @@ export default function Home() {
   }, []);
 
   async function sendMessage(text) {
-    if (!text.trim() || customerAccess.status !== 'active' || !authSession?.access_token) return;
+    const audioFlow = audioFlowRef.current;
+    if (!text.trim() || customerAccess.status !== 'active' || !audioFlow) return;
     setLoading(true);
     setReply('');
+    setAudioPlaybackError('');
     try {
-      const res = await fetch('/api/assistant', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${authSession.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message: text }),
-      });
-      const data = await res.json();
-      const assistantReply = data.reply || 'حدث خطأ، حاول مجددًا.';
-      setReply(assistantReply);
-      setAudioPlaybackError('');
-      if (data.reply) {
-        const audioFlow = audioFlowRef.current;
-        const resumeListening = Boolean(audioFlow?.isVADRunning && audioFlow.vad?.isRunning);
-        if (resumeListening) audioFlow.vad.pause();
-        void speak(assistantReply).catch((error) => {
-          console.error('[TTS] Could not speak the text reply:', error);
-          setAudioPlaybackError(error?.message || 'تعذر تشغيل الرد صوتيًا؛ الرد النصي ما زال متاحًا.');
-        }).finally(() => {
-          if (resumeListening && audioFlow?.vad?.isRunning) audioFlow.vad.resume();
-        });
-      }
-    } catch (err) {
-      setReply('تعذر الاتصال بالمساعد الآن.');
+      await audioFlow.respondTo(text.trim(), { channel: 'text' });
+    } catch (error) {
+      setReply('');
+      setAudioPlaybackError(error?.message || 'تعذر الاتصال بالمساعد الآن.');
     } finally {
       setLoading(false);
     }
@@ -606,8 +592,6 @@ export default function Home() {
 
     setWhatsappBusy(true);
     setWhatsappError('');
-    setWhatsAppSignupPhase('starting');
-    setWhatsappPhase('starting');
     try {
       const startResponse = await fetch('/api/whatsapp/embedded-signup/start', {
         method: 'POST',
@@ -623,8 +607,6 @@ export default function Home() {
         throw new Error(config.message || 'تعذر بدء الربط الرسمي حاليًا.');
       }
 
-      setWhatsAppSignupPhase('awaiting-meta');
-      setWhatsappPhase('awaiting-meta');
       const facebook = await loadMetaSdk(config.appId);
       const result = await new Promise((resolve, reject) => {
         let authCode = null;
@@ -676,8 +658,6 @@ export default function Home() {
         });
       });
 
-      setWhatsAppSignupPhase('saving');
-      setWhatsappPhase('saving');
       const callbackResponse = await fetch('/api/whatsapp/embedded-signup/callback', {
         method: 'POST',
         headers: {
@@ -692,8 +672,6 @@ export default function Home() {
     } catch (error) {
       setWhatsappError(error?.message || 'تعذر بدء الربط الرسمي حاليًا.');
     } finally {
-      clearWhatsAppSignupState();
-      setWhatsappPhase('idle');
       setWhatsappBusy(false);
     }
   }
@@ -787,6 +765,9 @@ export default function Home() {
 
   return (
     <main className="min-h-screen flex items-center justify-center p-4">
+      {setupOpen && customerDataReady && (
+        <PermissionsSetup onDone={() => setSetupOpen(false)} onSkip={() => setSetupOpen(false)} />
+      )}
       <div
         className="w-full transition-all duration-300"
         style={{ maxWidth: panelMaxWidth }}
@@ -812,13 +793,14 @@ export default function Home() {
                 ? 'جارٍ التحقق من الحساب...'
                 : customerAccess.status !== 'active'
                   ? 'يتطلب حسابًا مفعّلًا'
-                  : loading
-                    ? 'جاري التفكير...'
-                    : orbState === 'listening' || orbState === 'listening-active'
-                      ? 'يستمع الآن'
-                      : orbState === 'transcribing' || orbState === 'thinking' || orbState === 'speaking'
-                        ? 'جارٍ معالجة الصوت...'
-                        : 'فعّل الميكروفون للاستماع'}
+                  : ({
+                    preparing: 'جارٍ فتح الميكروفون…',
+                    listening: 'يستمع الآن',
+                    transcribing: 'يحوّل كلامك إلى نص…',
+                    thinking: 'يفكر…',
+                    speaking: 'يتحدث',
+                    error: 'حدث خطأ',
+                  })[orbState] || (loading ? 'يفكر…' : 'جاهز')}
             </span>
             <button
               aria-label={expanded ? 'تصغير الشاشة' : 'توسيع الشاشة'}
@@ -833,57 +815,57 @@ export default function Home() {
             <>
               {/* الكرة والترحيب */}
               <div className="flex-1 flex flex-col items-center justify-center px-6 py-6">
-                <AssistantOrb size={orbSize} state={orbState} />
+                <AssistantOrb size={orbSize} listening={['listening', 'speaking', 'thinking', 'transcribing'].includes(orbState)} />
 
                 <p className="text-text-primary text-base font-medium mt-5">
                   أهلًا بك
                 </p>
-                <p className="text-text-secondary text-xs mt-1 text-center">
-                  {reply || (orbState === 'listening' ? 'قل لي بماذا أساعدك' : 'فعّل الميكروفون لبدء المحادثة الصوتية')}
+                {lastTranscript && (
+                  <p className="mt-2 max-w-xs text-center text-[11px] leading-5 text-text-secondary/80" dir="auto">
+                    «{lastTranscript}»
+                  </p>
+                )}
+                <p className="text-text-secondary text-xs mt-1 text-center whitespace-pre-line" dir="auto">
+                  {reply || (orbState === 'listening' ? 'تحدث الآن، ثم اضغط «إرسال»' : 'اضغط الزر وتحدث')}
                 </p>
                 {audioPlaybackError && (
                   <p role="status" className="mt-2 max-w-xs text-center text-xs leading-5 text-amber-300">
                     {audioPlaybackError}
                   </p>
                 )}
-                {['idle', 'error', 'ready', 'listening', 'listening-active', 'transcribing', 'thinking', 'speaking', 'paused'].includes(orbState) && (
-                  <button
-                    type="button"
-                    onPointerDown={(event) => {
-                      event.preventDefault();
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                      void startAudioListening();
-                    }}
-                    onPointerUp={stopAudioListening}
-                    onPointerCancel={stopAudioListening}
-                    onLostPointerCapture={stopAudioListening}
-                    onContextMenu={(event) => event.preventDefault()}
-                    onDragStart={(event) => event.preventDefault()}
-                    onKeyDown={(event) => {
-                      if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
-                        event.preventDefault();
-                        void startAudioListening();
-                      }
-                    }}
-                    onKeyUp={(event) => {
-                      if (event.key === ' ' || event.key === 'Enter') {
-                        event.preventDefault();
-                        stopAudioListening();
-                      }
-                    }}
-                    aria-pressed={orbState === 'listening' || orbState === 'listening-active'}
-                    className="mt-4 touch-none select-none rounded-lg bg-gold px-4 py-2 text-sm font-semibold text-base-bg disabled:cursor-wait disabled:opacity-60"
-                    style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
-                  >
-                    {audioStarting ? 'جارٍ تفعيل الميكروفون...' : 'اضغط باستمرار للتحدث'}
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onPointerDown={onTalkPress}
+                  onPointerUp={onTalkRelease}
+                  onContextMenu={(event) => event.preventDefault()}
+                  onKeyDown={(event) => {
+                    if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) onTalkPress(event);
+                  }}
+                  disabled={orbState === 'transcribing' || orbState === 'thinking' || orbState === 'preparing'}
+                  aria-pressed={orbState === 'listening'}
+                  className={`mt-4 min-h-12 min-w-[180px] touch-none select-none rounded-full px-5 text-sm font-semibold transition-colors disabled:cursor-wait disabled:opacity-60 ${
+                    orbState === 'listening' ? 'bg-red-500 text-white' : 'bg-gold text-base-bg'
+                  }`}
+                  style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+                >
+                  {({
+                    preparing: 'جارٍ فتح الميكروفون…',
+                    listening: 'إرسال ●',
+                    transcribing: 'جارٍ الفهم…',
+                    thinking: 'يفكر…',
+                    speaking: 'إيقاف وتحدث',
+                  })[orbState] || 'اضغط وتحدث'}
+                </button>
+                <p className="mt-2 text-[11px] text-text-secondary">
+                  {orbState === 'listening' ? 'اضغط مرة أخرى للإرسال، أو اترك الزر إن كنت تضغط باستمرار' : 'ضغطة للبدء وضغطة للإرسال'}
+                </p>
               </div>
 
               {/* شريط الإدخال */}
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
+                  primeSpeech(); // inside the submit gesture, so iOS lets the reply speak
                   sendMessage(message);
                   setMessage('');
                 }}
@@ -1150,30 +1132,17 @@ export default function Home() {
                     </div>
 
                     <div className="space-y-2">
-                      <ul className="space-y-2">
-                        <li className="flex min-h-16 items-center gap-3 rounded-lg border border-base-border bg-base-card px-3 py-3">
-                          <span className="flex w-7 justify-center" aria-hidden="true">
-                            <span className="h-3 w-3 rounded-full border border-gold/45 bg-gold/20 shadow-[inset_0_0_5px_rgba(201,168,104,0.18)]" />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <span className="block text-sm text-text-primary">WhatsApp</span>
-                            {whatsappMetaConnection ? (
-                              <span className="mt-1 block text-xs text-text-secondary">
-                                مرتبط{whatsappMetaConnection.displayPhoneNumber ? ` · ${whatsappMetaConnection.displayPhoneNumber}` : ''}
-                              </span>
-                            ) : (
-                              <span className="mt-1 block text-xs text-text-secondary">{whatsappBusy ? 'جارٍ الربط...' : 'غير مرتبط'}</span>
-                            )}
-                          </div>
-                        </li>
-                      </ul>
-                      <p className="text-xs leading-5 text-text-secondary">
-                        تُعالج الرسائل النصية الواردة عبر Meta ومزوّد المساعد Groq، وقد تُحوّل إلى OpenRouter عند تعذّر Groq، دون حفظ سجل محادثات في قاعدة بيانات Smart.z؛ تنطبق سياسات معالجة البيانات الخاصة بكل مزوّد.
-                      </p>
                       <WhatsAppClusterConnection
-                        authSession={authSession}
-                        customerAccess={customerAccess}
+                        eligible={customerAccess.status === 'active' && Boolean(authSession?.access_token)}
+                        getAccessToken={getAccessToken}
+                        metaConnection={whatsappMetaConnection}
+                        metaBusy={whatsappBusy || whatsappConnectionLoading}
+                        metaError={whatsappError}
+                        onStartMeta={startOfficialWhatsAppSignup}
                       />
+                      <p className="text-xs leading-5 text-text-secondary">
+                        نص الرسائل الواردة يُرسل إلى Groq (أو OpenRouter عند تعذره) لتوليد الرد، ولا تحفظ Smart.z سجل المحادثات.
+                      </p>
                       <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">
                         <h3 className="text-sm font-medium text-text-primary">فتح تطبيق على الهاتف</h3>
                         <div className="grid grid-cols-2 gap-2">
@@ -1347,8 +1316,15 @@ export default function Home() {
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">صوت المساعد</h2>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        يُجرّب Smart.z النطق عبر محرك الجهاز أو المتصفح، مع تفضيل الصوت المحلي ثم السعودي والخليجي، واستبعاد ar-JO. لا يرسل التطبيق النص إلى خدمة صوت خاصة به؛ يعتمد الاتصال على محرك النطق وإعداداته في الجهاز.
+                        يستخدم Smart.z محرك النطق في جهازك، مفضلاً الصوت المحلي ثم السعودي فالخليجي فالأردني فالمصري. لا يُرسل نص الرد إلى أي خدمة صوت.
                       </p>
+                      <button
+                        type="button"
+                        onClick={() => setSetupOpen(true)}
+                        className="mt-3 min-h-10 w-full rounded-lg border border-base-border px-3 text-sm text-text-primary hover:bg-base-card"
+                      >
+                        إعادة فحص الأذونات والصوت
+                      </button>
                     </div>
 
                     <>
@@ -1381,17 +1357,13 @@ export default function Home() {
                           disabled={audioPreviewing}
                           onClick={async () => {
                             const audioFlow = audioFlowRef.current;
-                            if (audioFlow?.isProcessing) {
+                            if (audioFlow?.isRecording || audioFlow?.isBusy) {
                               setAudioSettingsMessage('انتظر انتهاء رد المساعد قبل تجربة العينة.');
                               return;
                             }
-
-                            const resumeListening = Boolean(
-                              audioFlow?.isVADRunning && audioFlow.vad?.isRunning
-                            );
+                            primeSpeech(); // inside the tap, for iOS
                             setAudioPreviewing(true);
                             setAudioSettingsMessage('');
-                            if (resumeListening) audioFlow.vad.pause();
                             try {
                               const result = await testSpeechPlayback('مرحبًا، هذا اختبار للصوت العربي.');
                               const engineName = result.engine === 'android-native'
@@ -1408,9 +1380,6 @@ export default function Home() {
                               console.error('[TTS] Voice preview failed:', error);
                               setAudioSettingsMessage(`فشل اختبار النطق: ${error?.message || String(error)}`);
                             } finally {
-                              if (resumeListening && audioFlow.vad?.isRunning) {
-                                audioFlow.vad.resume();
-                              }
                               setAudioPreviewing(false);
                             }
                           }}
