@@ -22,6 +22,9 @@ export async function POST(request) {
       responseStyle: body.responseStyle,
       language: body.language,
       channel: body.channel === 'voice' ? 'voice' : 'text',
+      // Present only when the user consented to learning; sanitised and size-limited inside.
+      profile: body.profile,
+      memories: body.memories,
     });
     return json({ reply });
   } catch (error) {

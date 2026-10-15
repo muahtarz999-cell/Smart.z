@@ -19,6 +19,7 @@ import {
   testSpeechPlayback,
 } from '../lib/tts';
 import { areTaskRemindersSupported, requestTaskReminderPermission } from '../lib/task-notifications';
+import { setLearningConsent } from '../lib/learning';
 
 export const SETUP_STORAGE_KEY = 'smartz-setup-v1';
 
@@ -69,6 +70,7 @@ export default function PermissionsSetup({ onDone, onSkip }) {
   const [voiceMessage, setVoiceMessage] = useState('');
   const [notifications, setNotifications] = useState(areTaskRemindersSupported() ? 'optional' : 'unsupported');
   const [busy, setBusy] = useState(false);
+  const [learning, setLearning] = useState('optional'); // optional | done | declined
 
   useEffect(() => {
     getMicrophonePermissionState().then((state) => {
@@ -130,10 +132,19 @@ export default function PermissionsSetup({ onDone, onSkip }) {
     }
   }
 
+  async function chooseLearning(granted) {
+    try {
+      await setLearningConsent(granted);
+      setLearning(granted ? 'done' : 'declined');
+    } catch {
+      setLearning('optional');
+    }
+  }
+
   const ready = mic === 'done' && voice === 'done';
 
   function finish() {
-    saveSetupState({ mic, voice, notifications });
+    saveSetupState({ mic, voice, notifications, learning });
     onDone?.();
   }
 
@@ -200,6 +211,23 @@ export default function PermissionsSetup({ onDone, onSkip }) {
             {notifications === 'failed' && <p className="text-amber-300">يمكنك تفعيلها لاحقاً من إعدادات الهاتف.</p>}
           </StepCard>
         )}
+
+        <StepCard number={notifications !== 'unsupported' ? '4' : '3'} title="التعلّم الشخصي" status={learning === 'done' ? 'done' : 'optional'}>
+          <p>
+            يتعلّم المساعد اسمك ولهجتك وأسلوبك واهتماماتك ليخدمك بشكل أفضل. ما يتعلّمه يُحفظ على هذا الهاتف فقط،
+            ويُرسل ملخصه مع طلباتك إلى مزوّد الذكاء الاصطناعي دون أن تحفظه Smart.z. تراه وتحذفه متى شئت من «التعلم والتخصيص».
+          </p>
+          {learning === 'optional' ? (
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => chooseLearning(true)}
+                className="min-h-10 rounded-lg bg-gold px-3 text-sm font-semibold text-base-bg">أوافق</button>
+              <button type="button" onClick={() => chooseLearning(false)}
+                className="min-h-10 rounded-lg border border-base-border px-3 text-sm text-text-primary">ليس الآن</button>
+            </div>
+          ) : (
+            <p className="text-text-primary">{learning === 'done' ? 'التعلّم مفعّل.' : 'التعلّم متوقف؛ يمكنك تفعيله لاحقاً.'}</p>
+          )}
+        </StepCard>
 
         <button type="button" disabled={!ready} onClick={finish}
           className="min-h-11 w-full rounded-lg bg-gold px-3 text-sm font-semibold text-base-bg disabled:opacity-40">

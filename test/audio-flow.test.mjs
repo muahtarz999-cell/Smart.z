@@ -53,6 +53,8 @@ function setup(options = {}, responses = {}) {
     recorder: fakeRecorder(options),
     getAccessToken: async () => 'token-1',
     getPreferences: () => ({ responseStyle: 'short', language: 'ar' }),
+    getContext: async () => options.context || {},
+    onTurnComplete: () => { globalThis.__flowEvents.push('turn-complete'); },
     onStateChange: (state) => states.push(state),
     onError: (error) => errors.push(error),
   });
@@ -118,4 +120,13 @@ test('typed messages use the same pipeline without opening the microphone', asyn
   assert.equal(reply, 'الساعة الثالثة.');
   assert.ok(!globalThis.__flowEvents.includes('mic-open'));
   assert.equal(JSON.parse(requests[0].init.body).channel, 'text');
+});
+
+test('learning context is sent with the request and learning is triggered after the reply', async () => {
+  const { manager, requests } = setup({ context: { profile: { name: 'فهد' }, memories: ['يحب القهوة'] } });
+  await manager.respondTo('مرحبا');
+  const body = JSON.parse(requests[0].init.body);
+  assert.deepEqual(body.profile, { name: 'فهد' });
+  assert.deepEqual(body.memories, ['يحب القهوة']);
+  assert.ok(globalThis.__flowEvents.includes('turn-complete'));
 });

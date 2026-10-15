@@ -5,6 +5,8 @@ import AssistantOrb from '../components/AssistantOrb';
 import LocalDataPanel from '../components/LocalDataPanel';
 import WhatsAppClusterConnection from '../components/WhatsAppClusterConnection';
 import PermissionsSetup, { readSetupState } from '../components/PermissionsSetup';
+import LearningPanel from '../components/LearningPanel';
+import { getAssistantContext, learnFromRecentConversation } from '../lib/learning';
 import { AudioFlowManager } from '../lib/audio-flow';
 import {
   openInstalledApp,
@@ -139,6 +141,7 @@ export default function Home() {
   const [orbState, setOrbState] = useState('ready');
   const [lastTranscript, setLastTranscript] = useState('');
   const [setupOpen, setSetupOpen] = useState(false);
+  const [learningVersion, setLearningVersion] = useState(0);
   const audioFlowRef = useRef(null);
   const pressStartedAtRef = useRef(0);
   const profileRef = useRef(DEFAULT_PROFILE);
@@ -467,6 +470,13 @@ export default function Home() {
         responseStyle: profileRef.current.responseStyle,
         language: profileRef.current.language,
       }),
+      getContext: getAssistantContext,
+      onTurnComplete: () => {
+        // Runs in the background; learning must never slow down or break a conversation.
+        learnFromRecentConversation({ getAccessToken })
+          .then((profile) => { if (profile) setLearningVersion((v) => v + 1); })
+          .catch((error) => console.warn('[Learning]', error?.message));
+      },
       onStateChange: (state) => setOrbState(state),
       onTranscript: (text) => setLastTranscript(text),
       onReply: (text) => {
@@ -1245,14 +1255,20 @@ export default function Home() {
                   <div className="space-y-5">
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">التعلم والتخصيص</h2>
+                    </div>
+
+                    <LearningPanel getAccessToken={getAccessToken} refreshKey={learningVersion} />
+
+                    <div className="border-t border-base-border pt-4">
+                      <h3 className="text-sm font-medium text-text-primary">ملاحظاتك للمساعد</h3>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        حاليًا يمكنك إضافة ذكريات يدويًا وحفظها محليًا؛ لا يتعلم النموذج منها تلقائيًا ولا تُرسل إلى Groq.
+                        أشياء تريد أن يعرفها دائماً. تُرسل معه فقط إذا كان التعلّم الشخصي مفعّلاً.
                       </p>
                     </div>
 
                     <form onSubmit={saveMemory} className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
                       <label className="block space-y-2">
-                        <span className="text-sm text-text-primary">إضافة ذاكرة</span>
+                        <span className="text-sm text-text-primary">إضافة ملاحظة</span>
                         <textarea
                           value={memoryDraft}
                           onChange={(event) => setMemoryDraft(event.target.value)}
@@ -1275,7 +1291,7 @@ export default function Home() {
                       <p className="text-sm text-text-secondary">جارٍ تحميل الذاكرة...</p>
                     ) : savedMemories.length === 0 ? (
                       <p className="rounded-lg border border-base-border bg-base-card px-4 py-5 text-sm text-text-secondary">
-                        لا توجد ذاكرة محفوظة حاليًا.
+                        لا توجد ملاحظات بعد.
                       </p>
                     ) : (
                       <ul className="space-y-2">
