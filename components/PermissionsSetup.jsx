@@ -14,7 +14,7 @@
 import { useEffect, useState } from 'react';
 import { getMicrophonePermissionState, requestMicrophonePermission } from '../lib/voice-recorder';
 import { canOpenSpeechEngineSettings, openSpeechEngineSettings } from '../lib/tts';
-import { primeSpeech, testVoice } from '../lib/speech';
+import { primeSpeech, testVoice as runVoiceTest } from '../lib/speech';
 import { areTaskRemindersSupported, requestTaskReminderPermission } from '../lib/task-notifications';
 import { setLearningConsent } from '../lib/learning';
 import { getOverlayPermission, isNativeDrivingAvailable, requestOverlayPermission } from '../lib/driving-mode';
@@ -103,11 +103,11 @@ export default function PermissionsSetup({ onDone, onSkip }) {
     }
   }
 
-  function testVoice() {
+  function handleTestVoice() {
     primeSpeech(); // must run inside this tap for iOS
     setVoice('testing');
     setVoiceMessage('');
-    testVoice('مرحباً، أنا مساعدك سمارت زد. إذا سمعتني فاضغط «سمعت الصوت».')
+    runVoiceTest('مرحباً، أنا مساعدك سمارت زد. إذا سمعتني فاضغط «سمعت الصوت».')
       .then((result) => {
         if (result.success) {
           setVoice('asking');
@@ -115,6 +115,10 @@ export default function PermissionsSetup({ onDone, onSkip }) {
           setVoice('failed');
           setVoiceMessage(result.error || 'لم يكتمل تشغيل الصوت.');
         }
+      })
+      .catch((error) => {
+        setVoice('failed');
+        setVoiceMessage(error?.message || 'تعذر اختبار صوت المساعد.');
       });
   }
 
@@ -184,7 +188,7 @@ export default function PermissionsSetup({ onDone, onSkip }) {
             <li>افصل سماعة Bluetooth إن لم تكن تستخدمها.</li>
           </ul>
           {voice !== 'asking' && voice !== 'done' && (
-            <button type="button" disabled={voice === 'testing'} onClick={testVoice}
+            <button type="button" disabled={voice === 'testing'} onClick={handleTestVoice}
               className="min-h-10 w-full rounded-lg border border-gold/50 bg-gold/10 px-3 text-sm text-gold disabled:opacity-60">
               {voice === 'testing' ? 'جارٍ التشغيل…' : 'اختبار الصوت'}
             </button>

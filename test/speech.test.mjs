@@ -8,6 +8,7 @@ const source = (await readFile(new URL('../lib/speech.js', import.meta.url), 'ut
      const primeDeviceSpeech = () => {};
      const speakOnDevice = async (t) => { globalThis.__deviceSpoken.push(t); return true; };
      const stopDeviceSpeech = () => {};`)
+  .replace('const TEST_VOICE_TIMEOUT_MS = 15000;', 'const TEST_VOICE_TIMEOUT_MS = 25;')
   .replace("from './text-chunks';", `from '${new URL('../lib/text-chunks.js', import.meta.url).href}';`);
 const speech = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
@@ -75,6 +76,14 @@ test('with the device voice turned off, a cloud failure is reported and nothing 
   setup({ cloud: 'fail', deviceFallback: false });
   await assert.rejects(speech.speak('مرحبا'), /صوت الجهاز معطّل/);
   assert.equal(globalThis.__deviceSpoken.length, 0);
+});
+
+test('voice setup test times out when speech initialization never settles', async () => {
+  setup();
+  speech.configureSpeech({ getAccessToken: () => new Promise(() => {}) });
+  const result = await speech.testVoice('اختبار');
+  assert.equal(result.success, false);
+  assert.match(result.error, /انتهت مهلة اختبار صوت المساعد/);
 });
 
 test('settings persist and default to cloud-first with device fallback on', () => {
