@@ -1,21 +1,21 @@
 import { json } from '../../../lib/api-response';
 import { AssistantResponseError, generateAssistantTurn, WHATSAPP_SEND_TOOL } from '../../../lib/assistant-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
-import { getClusterNode, getUserAssignment } from '../../../lib/whatsapp-cluster';
-import { nodeContactSearch, planSendCommand } from '../../../lib/whatsapp-commands';
+import { linkedWhatsAppNode, nodeContactSearch, planSendCommand } from '../../../lib/whatsapp-commands';
+import { DRIVING_MESSAGES } from '../../../lib/driving-commands';
 
 export const runtime = 'edge';
 
 const MAX_MESSAGE_CHARACTERS = 4000;
 
-/** The personal WhatsApp node of this customer, when linked (enables voice commands). */
-async function linkedWhatsAppNode(access) {
-  try {
-    const assignment = await getUserAssignment(access.user.id, access.client);
-    return assignment?.status === 'connected' ? getClusterNode(assignment.node_id) : null;
-  } catch {
-    return null;
-  }
+/** What the assistant says about a planned send, given where it will wait. */
+function sendReplyFor(plan, body) {
+  const action = plan.action;
+  if (!action) return plan.reply;
+  const driving = body.channel === 'driving';
+  if (action.requiresManualConfirmation) return driving ? DRIVING_MESSAGES.bulkHeld : plan.reply;
+  if (body.confirmEverySend === true) return driving ? DRIVING_MESSAGES.heldForConfirmation : 'الرسالة جاهزة، أكّدها من الشاشة.';
+  return plan.reply;
 }
 
 export async function POST(request) {
@@ -34,7 +34,7 @@ export async function POST(request) {
       history: body.history, // sanitised inside: last 6 turns, user/assistant only
       responseStyle: body.responseStyle,
       language: body.language,
-      channel: body.channel === 'voice' ? 'voice' : 'text',
+      channel: ['voice', 'driving'].includes(body.channel) ? body.channel : 'text',
       // Present only when the user consented to learning; sanitised and size-limited inside.
       profile: body.profile,
       memories: body.memories,
@@ -45,7 +45,7 @@ export async function POST(request) {
     const send = turn.toolCalls.find((call) => call.name === 'send_whatsapp_message');
     if (send && node) {
       const plan = await planSendCommand(send.args, nodeContactSearch(node));
-      return json({ reply: plan.reply, action: plan.action || null });
+      return json({ reply: sendReplyFor(plan, body), action: plan.action || null });
     }
     if (!turn.reply) throw new AssistantResponseError('UPSTREAM');
     return json({ reply: turn.reply });

@@ -11,7 +11,8 @@ const testable = source
      const stopSpeaking = () => globalThis.__flowEvents.push('stop-speaking');`)
   .replace("import { addMessage, getRecentMessages } from './conversation';",
     `const addMessage = async (role, content) => { globalThis.__flowHistory.push({ role, content }); };
-     const getRecentMessages = async (limit) => globalThis.__flowHistory.slice(-limit);`);
+     const getRecentMessages = async (limit) => globalThis.__flowHistory.slice(-limit);`)
+  .replace("from './driving-commands'", `from '${new URL('../lib/driving-commands.js', import.meta.url).href}'`);
 
 globalThis.__flowEvents = [];
 globalThis.__flowHistory = [];
@@ -145,4 +146,37 @@ test('an intercepted utterance ("تراجع") never reaches the assistant', asyn
   await manager.beginTurn();
   assert.equal(await manager.endTurn(), true);
   assert.ok(!requests.some((r) => r.url === '/api/assistant'));
+});
+
+test('driving mode: a recording is answered on the driving channel; silence hallucinations are dropped quietly', async () => {
+  const { manager, errors, requests } = setup();
+  const result = await manager.respondToRecording(new Blob(['x']), { channel: 'driving', ignoreNoise: true });
+  assert.equal(result.status, 'replied');
+  assert.equal(JSON.parse(requests.find((r) => r.url === '/api/assistant').init.body).channel, 'driving');
+
+  const noisy = setup({}, { '/api/transcribe': { status: 200, body: { text: 'اشتركوا في القناة' } } });
+  const ignored = await noisy.manager.respondToRecording(new Blob(['x']), { channel: 'driving', ignoreNoise: true });
+  assert.equal(ignored.status, 'ignored');
+  assert.equal(noisy.requests.some((r) => r.url === '/api/assistant'), false, 'nothing is asked');
+  assert.deepEqual(noisy.errors, [], 'no error shown to a driver');
+  assert.deepEqual(errors, []);
+});
+
+test('leaving the app closes the microphone and a late reply is shown but not spoken', async () => {
+  const { manager, states } = setup();
+  await manager.beginTurn();
+  manager.setBackgrounded(true);
+  assert.equal(manager.isRecording, false, 'mic closed');
+  assert.equal(states.at(-1), 'ready', 'not stuck on listening');
+
+  globalThis.__flowEvents = [];
+  const replies = [];
+  manager.onReply = (text) => replies.push(text);
+  await manager.respondTo('كم الساعة؟', { channel: 'voice' });
+  assert.deepEqual(replies, ['الساعة الثالثة.']);
+  assert.equal(globalThis.__flowEvents.some((e) => e.startsWith('speak:')), false, 'silent in the background');
+
+  manager.setBackgrounded(false);
+  await manager.respondTo('كم الساعة؟', { channel: 'voice' });
+  assert.ok(globalThis.__flowEvents.includes('speak:الساعة الثالثة.'), 'speaks again in the foreground');
 });

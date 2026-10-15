@@ -82,7 +82,8 @@ test('the assistant turn returns the tool call the model made', async () => {
 });
 
 // ---------------------------------------------------------------- undo window
-const source = await readFile(new URL('../lib/send-actions.js', import.meta.url), 'utf8');
+const source = (await readFile(new URL('../lib/send-actions.js', import.meta.url), 'utf8'))
+  .replace("from './driving-commands'", `from '${new URL('../lib/driving-commands.js', import.meta.url).href}'`);
 const actions = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 function setupActions(settings) {

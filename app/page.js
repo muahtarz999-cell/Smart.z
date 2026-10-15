@@ -41,11 +41,16 @@ import {
   preloadArabicVoice,
   testSpeechPlayback,
 } from '../lib/tts';
-import { configureSpeech, primeSpeech, speak as speakReply } from '../lib/speech';
+import { configureSpeech, getVoiceSettings, primeSpeech, speak as speakReply } from '../lib/speech';
 import VoiceSettings from '../components/VoiceSettings';
 import SendActionBanner from '../components/SendActionBanner';
 import SendSettings from '../components/SendSettings';
-import { cancelPendingSend, configureSendActions, isCancelCommand, queueSend } from '../lib/send-actions';
+import { cancelPendingSend, configureSendActions, getActionSettings, isCancelCommand, queueSend } from '../lib/send-actions';
+import DrivingSettings from '../components/DrivingSettings';
+import DrivingScreen from '../components/DrivingScreen';
+import { DrivingController } from '../lib/driving-mode';
+import { DRIVING_MESSAGES, isDrivingStartCommand, isDrivingStopCommand } from '../lib/driving-commands';
+import { addMessage, getRecentMessages } from '../lib/conversation';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import {
   getTaskReminderStatus,
@@ -61,6 +66,7 @@ const MENU_SECTIONS = [
   { id: 'documents', label: 'مستنداتي' },
   { id: 'study', label: 'المذاكرة' },
   { id: 'audio', label: 'الصوت' },
+  { id: 'driving', label: 'وضع القيادة' },
   { id: 'apps', label: 'ربط التطبيقات' },
   { id: 'privacy', label: 'الخصوصية والبيانات' },
 ];
@@ -167,6 +173,8 @@ export default function Home() {
   const attachmentRef = useRef(null);
   const intakeRef = useRef(null);
   const audioFlowRef = useRef(null);
+  const drivingRef = useRef(null);
+  const [driving, setDriving] = useState({ active: false, engine: null, phase: 'idle' });
   const pressStartedAtRef = useRef(0);
   const micLevelRef = useRef(0); // written by the recorder ~10x/s, read by the wave without re-rendering
   const profileRef = useRef(DEFAULT_PROFILE);
@@ -504,6 +512,17 @@ export default function Home() {
 
   /** Utterances handled on the device without the assistant: quiz answers, "تراجع", "اكتب لي عقد". */
   function interceptLocally(text) {
+    const drivingMode = drivingRef.current;
+    if (drivingMode?.active && isDrivingStopCommand(text)) {
+      setReply(DRIVING_MESSAGES.stopped);
+      void drivingMode.stop('user');
+      return true;
+    }
+    if (isDrivingStartCommand(text) && drivingMode) {
+      if (drivingMode.active) say('وضع القيادة يعمل بالفعل.');
+      else void drivingMode.start();
+      return true;
+    }
     if (isVoiceQuizActive()) {
       say(answerVoiceQuiz(text) || '');
       return true;
@@ -551,6 +570,7 @@ export default function Home() {
       getPreferences: () => ({
         responseStyle: profileRef.current.responseStyle,
         language: profileRef.current.language,
+        confirmEverySend: getActionSettings().confirmEverySend,
       }),
       getContext: getAssistantContext,
       onAction: queueSend,
@@ -576,11 +596,73 @@ export default function Home() {
     });
     audioFlowRef.current = audioFlow;
 
+    const readSession = async () => {
+      const { data } = await supabase.auth.getSession();
+      const session = data?.session;
+      return { accessToken: session?.access_token || null, expiresAt: session?.expires_at ? session.expires_at * 1000 : 0 };
+    };
+    const drivingMode = new DrivingController({
+      audioFlow,
+      getAccessSession: readSession,
+      // Everything the Android service needs to hold a conversation on its own while the app is in the background.
+      getNativeContext: async () => {
+        const session = await readSession();
+        if (!session.accessToken) throw new Error('انتهت جلسة الدخول.');
+        const context = await Promise.resolve(getAssistantContext()).catch(() => ({})) || {};
+        const history = await getRecentMessages(6).catch(() => []);
+        const voice = getVoiceSettings();
+        const actions = getActionSettings();
+        return {
+          baseUrl: window.location.origin,
+          ...session,
+          history: history.map(({ role, content }) => ({ role, content })),
+          profile: context.profile || null,
+          memories: Array.isArray(context.memories) ? context.memories : [],
+          preferences: { responseStyle: profileRef.current.responseStyle || '', language: profileRef.current.language || '' },
+          voice: { provider: voice.provider, voices: voice.voices, deviceFallback: voice.deviceFallback },
+          undoSeconds: actions.undoSeconds,
+          confirmEverySend: actions.confirmEverySend,
+        };
+      },
+      onChange: (next) => {
+        setDriving({ active: next.active, engine: next.engine, phase: next.phase });
+        if (next.message) setAudioPlaybackError(next.message);
+      },
+      onLevel: (level) => { micLevelRef.current = level; },
+      onNativeTurn: ({ transcript, reply: spoken }) => {
+        if (transcript) { setLastTranscript(transcript); addMessage('user', transcript).catch(() => {}); }
+        if (spoken) { setReply(spoken); addMessage('assistant', spoken).catch(() => {}); }
+      },
+      // Sends the service could not finish alone (more than 5 people, a document): they wait here for a tap.
+      onNativeAction: (action) => queueSend(action),
+    });
+    drivingRef.current = drivingMode;
+    void drivingMode.attachToRunningService();
+
     return () => {
+      drivingMode.destroy();
+      if (drivingRef.current === drivingMode) drivingRef.current = null;
       audioFlow.destroy();
       if (audioFlowRef.current === audioFlow) audioFlowRef.current = null;
     };
   }, [customerAccess.status, authUser?.id]);
+
+  // The Android driving service needs each refreshed token (sessions refresh hourly).
+  useEffect(() => {
+    if (!authSession?.access_token) return;
+    void drivingRef.current?.updateSession({
+      accessToken: authSession.access_token,
+      expiresAt: authSession.expires_at ? authSession.expires_at * 1000 : 0,
+    });
+  }, [authSession?.access_token]);
+
+  // Leaving the app (another app, locked screen): close the microphone and stay silent
+  // instead of hanging on "listening"; the reply still appears when the user returns.
+  useEffect(() => {
+    const onVisibility = () => audioFlowRef.current?.setBackgrounded(document.visibilityState === 'hidden');
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
 
   // Talk button: a short tap starts recording and a second tap sends;
   // holding for more than 450 ms sends on release. No pointer capture: the
@@ -868,6 +950,17 @@ export default function Home() {
     <main className="min-h-screen flex items-center justify-center p-4">
       {setupOpen && customerDataReady && (
         <PermissionsSetup onDone={() => setSetupOpen(false)} onSkip={() => setSetupOpen(false)} />
+      )}
+      {driving.active && (
+        <DrivingScreen
+          phase={driving.engine === 'web' && ['transcribing', 'thinking', 'speaking'].includes(orbState) ? orbState : driving.phase}
+          levelRef={micLevelRef}
+          transcript={lastTranscript}
+          reply={reply}
+          error={audioPlaybackError}
+          onInterrupt={() => drivingRef.current?.interrupt()}
+          onStop={() => { setReply(DRIVING_MESSAGES.stopped); void drivingRef.current?.stop('user'); }}
+        />
       )}
       <div
         className="w-full min-w-0 transition-all duration-300"
@@ -1671,6 +1764,16 @@ export default function Home() {
                         </section>
                     </>
                   </div>
+                ) : activeSection === 'driving' ? (
+                  <DrivingSettings
+                    active={driving.active}
+                    onStart={() => {
+                      primeSpeech(); // inside the tap: lets the reply play later
+                      setMenuOpen(false);
+                      void drivingRef.current?.start();
+                    }}
+                    onStop={() => { void drivingRef.current?.stop('user'); }}
+                  />
                 ) : activeSection === 'privacy' ? (
                   <div className="space-y-7">
                     <div>

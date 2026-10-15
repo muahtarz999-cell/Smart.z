@@ -7,7 +7,8 @@
  * the user starts talking to it.
  *
  * Required: microphone + a voice the user confirms they heard.
- * Optional: notifications (task reminders, native app only).
+ * Optional: notifications (task reminders, native app only), the driving-mode
+ * bubble over other apps (Android app only), learning.
  */
 
 import { useEffect, useState } from 'react';
@@ -16,6 +17,7 @@ import { canOpenSpeechEngineSettings, openSpeechEngineSettings } from '../lib/tt
 import { primeSpeech, testVoice } from '../lib/speech';
 import { areTaskRemindersSupported, requestTaskReminderPermission } from '../lib/task-notifications';
 import { setLearningConsent } from '../lib/learning';
+import { getOverlayPermission, isNativeDrivingAvailable, requestOverlayPermission } from '../lib/driving-mode';
 
 export const SETUP_STORAGE_KEY = 'smartz-setup-v1';
 
@@ -67,6 +69,15 @@ export default function PermissionsSetup({ onDone, onSkip }) {
   const [notifications, setNotifications] = useState(areTaskRemindersSupported() ? 'optional' : 'unsupported');
   const [busy, setBusy] = useState(false);
   const [learning, setLearning] = useState('optional'); // optional | done | declined
+  const [overlay, setOverlay] = useState('unsupported'); // unsupported | optional | done
+
+  useEffect(() => {
+    if (!isNativeDrivingAvailable()) return undefined;
+    const refresh = () => getOverlayPermission().then((state) => setOverlay(state === 'granted' ? 'done' : 'optional'));
+    refresh();
+    document.addEventListener('visibilitychange', refresh); // back from Android settings
+    return () => document.removeEventListener('visibilitychange', refresh);
+  }, []);
 
   useEffect(() => {
     getMicrophonePermissionState().then((state) => {
@@ -208,7 +219,19 @@ export default function PermissionsSetup({ onDone, onSkip }) {
           </StepCard>
         )}
 
-        <StepCard number={notifications !== 'unsupported' ? '4' : '3'} title="التعلّم الشخصي" status={learning === 'done' ? 'done' : 'optional'}>
+        {overlay !== 'unsupported' && (
+          <StepCard number={notifications !== 'unsupported' ? '4' : '3'} title="الظهور فوق التطبيقات (وضع القيادة)" status={overlay === 'done' ? 'done' : 'optional'}>
+            <p>في وضع القيادة تظهر فقاعة صغيرة فوق الخرائط تبيّن أن المساعد يستمع، وتلمسها لإيقاف كلامه.</p>
+            {overlay !== 'done' && (
+              <button type="button" onClick={async () => setOverlay((await requestOverlayPermission()) ? 'done' : 'optional')}
+                className="min-h-10 w-full rounded-lg border border-base-border px-3 text-sm text-text-primary">
+                السماح بالظهور فوق التطبيقات
+              </button>
+            )}
+          </StepCard>
+        )}
+
+        <StepCard number={String(3 + (notifications !== 'unsupported' ? 1 : 0) + (overlay !== 'unsupported' ? 1 : 0))} title="التعلّم الشخصي" status={learning === 'done' ? 'done' : 'optional'}>
           <p>
             يتعلّم المساعد اسمك ولهجتك وأسلوبك واهتماماتك ليخدمك بشكل أفضل. ما يتعلّمه يُحفظ على هذا الهاتف فقط،
             ويُرسل ملخصه مع طلباتك إلى مزوّد الذكاء الاصطناعي دون أن تحفظه Smart.z. تراه وتحذفه متى شئت من «التعلم والتخصيص».
