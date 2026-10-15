@@ -32,6 +32,9 @@ import {
 } from '../lib/tts';
 import { configureSpeech, primeSpeech } from '../lib/speech';
 import VoiceSettings from '../components/VoiceSettings';
+import SendActionBanner from '../components/SendActionBanner';
+import SendSettings from '../components/SendSettings';
+import { cancelPendingSend, configureSendActions, isCancelCommand, queueSend } from '../lib/send-actions';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import {
   getTaskReminderStatus,
@@ -466,6 +469,12 @@ export default function Home() {
     if (customerAccess.status !== 'active' || !authUser) return undefined;
 
     configureSpeech({ getAccessToken });
+    configureSendActions({
+      getAccessToken,
+      onResult: (result) => {
+        if (!result.ok) setAudioPlaybackError(result.error?.message || result.data?.error || 'تعذر إرسال رسالة واتساب.');
+      },
+    });
     const audioFlow = new AudioFlowManager({
       getAccessToken,
       getPreferences: () => ({
@@ -473,6 +482,14 @@ export default function Home() {
         language: profileRef.current.language,
       }),
       getContext: getAssistantContext,
+      onAction: queueSend,
+      interceptTranscript: (text) => {
+        if (isCancelCommand(text) && cancelPendingSend()) {
+          setReply('ألغيت الإرسال.');
+          return true;
+        }
+        return false;
+      },
       onTurnComplete: () => {
         // Runs in the background; learning must never slow down or break a conversation.
         learnFromRecentConversation({ getAccessToken })
@@ -541,6 +558,10 @@ export default function Home() {
   async function sendMessage(text) {
     const audioFlow = audioFlowRef.current;
     if (!text.trim() || customerAccess.status !== 'active' || !audioFlow) return;
+    if (isCancelCommand(text) && cancelPendingSend()) {
+      setReply('ألغيت الإرسال.');
+      return;
+    }
     setLoading(true);
     setReply('');
     setAudioPlaybackError('');
@@ -873,6 +894,8 @@ export default function Home() {
                 </p>
               </div>
 
+              <SendActionBanner />
+
               {/* شريط الإدخال */}
               <form
                 onSubmit={(e) => {
@@ -1153,8 +1176,9 @@ export default function Home() {
                         onStartMeta={startOfficialWhatsAppSignup}
                       />
                       <p className="text-xs leading-5 text-text-secondary">
-                        نص الرسائل الواردة يُرسل إلى Groq (أو OpenRouter عند تعذره) لتوليد الرد، ولا تحفظ Smart.z سجل المحادثات.
+                        نص الرسائل الواردة والرسائل الصوتية يُرسل إلى Groq (أو OpenRouter عند تعذره) لتوليد الرد، ولا تحفظ Smart.z سجل المحادثات.
                       </p>
+                      <SendSettings />
                       <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">
                         <h3 className="text-sm font-medium text-text-primary">فتح تطبيق على الهاتف</h3>
                         <div className="grid grid-cols-2 gap-2">

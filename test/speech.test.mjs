@@ -7,7 +7,8 @@ const source = (await readFile(new URL('../lib/speech.js', import.meta.url), 'ut
     `const cleanTextForSpeech = (t) => String(t).trim();
      const primeDeviceSpeech = () => {};
      const speakOnDevice = async (t) => { globalThis.__deviceSpoken.push(t); return true; };
-     const stopDeviceSpeech = () => {};`);
+     const stopDeviceSpeech = () => {};`)
+  .replace("from './text-chunks';", `from '${new URL('../lib/text-chunks.js', import.meta.url).href}';`);
 const speech = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 class FakeAudio {

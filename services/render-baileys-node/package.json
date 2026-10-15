@@ -9,12 +9,13 @@
   },
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check supabase-auth-state.js"
+    "check": "node --check index.js && node --check supabase-auth-state.js && node --check contacts.js && node --check voice-note.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "@whiskeysockets/baileys": "^6.7.9",
     "express": "^4.19.2",
+    "ffmpeg-static": "^5.2.0",
     "pino": "^9.3.2",
     "qrcode": "^1.5.3"
   }

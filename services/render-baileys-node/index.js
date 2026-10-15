@@ -11,6 +11,7 @@
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
@@ -22,6 +23,8 @@ import { timingSafeEqual } from 'node:crypto';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import { clearSupabaseAuthState, useSupabaseAuthState } from './supabase-auth-state.js';
+import { ContactBook } from './contacts.js';
+import { toVoiceNote } from './voice-note.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const NODE_ID = Number(process.env.CLUSTER_NODE_ID || 0);
@@ -35,6 +38,8 @@ const DEMAND_WINDOW_MS = 3 * 60 * 1000; // keep generating QR codes only while s
 const PAIRING_READY_TIMEOUT_MS = 25_000;
 const MAX_MESSAGE_AGE_S = 120; // ignore backlog delivered after a reconnect
 const RECONNECT_DELAY_MS = 3_000;
+const MAX_VOICE_NOTE_BYTES = 5 * 1024 * 1024;
+const MAX_AUTO_REPLIES_PER_MINUTE = 8; // keeps the number far from WhatsApp's automation limits
 
 if (!Number.isInteger(NODE_ID) || NODE_ID < 1 || NODE_ID > 5) {
   console.error('CLUSTER_NODE_ID must be 1..5');
@@ -49,6 +54,8 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
+
+const contacts = new ContactBook({ supabase, nodeId: NODE_ID, dir: process.cwd() });
 
 // ---------------------------------------------------------------- state
 const node = {
@@ -78,6 +85,7 @@ async function loadAuthState() {
 async function clearSession() {
   if (supabase) await clearSupabaseAuthState(supabase, NODE_ID);
   await fs.rm(AUTH_DIR, { recursive: true, force: true });
+  await contacts.clear();
   node.registered = false;
   node.phone = null;
   node.qr = null;
@@ -120,6 +128,7 @@ async function startSocket() {
     node.lastError = null;
     const { state, saveCreds } = await loadAuthState();
     node.registered = Boolean(state.creds?.registered);
+    await contacts.load().catch(() => {});
 
     let version;
     try {
@@ -166,6 +175,9 @@ async function startSocket() {
         node.registered = true;
         node.phone = (sock.user?.id || '').split(':')[0].split('@')[0] || null;
         resolveQrWaiters();
+        sock.groupFetchAllParticipating()
+          .then((groups) => contacts.setGroups(Object.values(groups || {})))
+          .catch(() => {});
         console.log(`[node ${NODE_ID}] connected as ${node.phone}`);
       }
       if (connection === 'close') {
@@ -189,6 +201,11 @@ async function startSocket() {
         if (keepAlive) setTimeout(() => startSocket().catch(onStartError), RECONNECT_DELAY_MS);
       }
     });
+
+    sock.ev.on('contacts.upsert', (list) => contacts.upsert(list));
+    sock.ev.on('contacts.update', (list) => contacts.upsert(list));
+    sock.ev.on('messaging-history.set', ({ contacts: list }) => { if (list) contacts.upsert(list); });
+    sock.ev.on('groups.upsert', (list) => contacts.addGroups(list));
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (generation !== node.generation || type !== 'notify') return;
@@ -236,6 +253,20 @@ function alreadySeen(id) {
   return false;
 }
 
+const recentReplies = [];
+function underReplyLimit() {
+  const now = Date.now();
+  while (recentReplies.length && now - recentReplies[0] > 60_000) recentReplies.shift();
+  return recentReplies.length < MAX_AUTO_REPLIES_PER_MINUTE;
+}
+
+function senderNumberOf(message) {
+  const key = message.key || {};
+  const candidates = [key.senderPn, key.remoteJidAlt, key.participantPn, key.remoteJid];
+  const phoneJid = candidates.find((jid) => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net'));
+  return (phoneJid || '').split('@')[0].split(':')[0] || null;
+}
+
 async function handleIncoming(message) {
   const jid = message.key?.remoteJid;
   if (message.key?.fromMe || !jid) return;
@@ -245,23 +276,58 @@ async function handleIncoming(message) {
   const sentAt = Number(message.messageTimestamp || 0);
   if (sentAt && Date.now() / 1000 - sentAt > MAX_MESSAGE_AGE_S) return;
 
-  const text = extractText(message)?.trim();
-  if (!text) return;
+  if (message.pushName) contacts.upsert([{ id: jid, notify: message.pushName }]);
+
+  const audioMessage = message.message?.audioMessage;
+  const text = audioMessage ? null : extractText(message)?.trim();
+  if (!audioMessage && !text) return;
+  if (!underReplyLimit()) return;
+
+  const sock = node.sock;
+  let audio;
+  if (audioMessage) {
+    if (Number(audioMessage.fileLength || 0) > MAX_VOICE_NOTE_BYTES) return;
+    const buffer = await downloadMediaMessage(message, 'buffer', {}, { logger, reuploadRequest: sock?.updateMediaMessage });
+    audio = { data: Buffer.from(buffer).toString('base64'), mimetype: audioMessage.mimetype || 'audio/ogg; codecs=opus' };
+  }
 
   const response = await fetch(`${APP_URL}/api/whatsapp/cluster/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NODE_KEY}` },
-    body: JSON.stringify({ nodeId: NODE_ID, remoteJid: jid, text: text.slice(0, 4000), messageId: message.key.id }),
-    signal: AbortSignal.timeout(30_000),
+    body: JSON.stringify({
+      nodeId: NODE_ID,
+      remoteJid: jid,
+      senderNumber: senderNumberOf(message),
+      text: text ? text.slice(0, 4000) : undefined,
+      audio,
+      messageId: message.key.id,
+    }),
+    signal: AbortSignal.timeout(45_000),
   });
   const data = await response.json().catch(() => null);
-  if (!response.ok || !data?.success || !data.reply) return; // auto-reply off, or nothing to say
+  if (!response.ok || !data?.success || !data.reply) return; // auto-reply off, not allowed, or nothing to say
 
-  const sock = node.sock;
-  if (!sock || node.status !== 'CONNECTED') return;
-  await sock.sendPresenceUpdate('composing', jid).catch(() => {});
-  await sock.sendMessage(jid, { text: data.reply });
-  await sock.sendPresenceUpdate('paused', jid).catch(() => {});
+  const current = node.sock;
+  if (!current || node.status !== 'CONNECTED') return;
+  recentReplies.push(Date.now());
+  await current.readMessages([message.key]).catch(() => {});
+
+  if (Array.isArray(data.voice) && data.voice.length) {
+    try {
+      await current.sendPresenceUpdate('recording', jid).catch(() => {});
+      const ogg = await toVoiceNote(data.voice.map((part) => Buffer.from(part.data, 'base64')));
+      await current.sendMessage(jid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+      await current.sendPresenceUpdate('paused', jid).catch(() => {});
+      return;
+    } catch (error) {
+      logger.error({ error }, 'voice reply failed; sending text');
+    }
+  }
+
+  await current.sendPresenceUpdate('composing', jid).catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, Math.min(4000, 800 + data.reply.length * 25))); // human pace
+  await current.sendMessage(jid, { text: data.reply });
+  await current.sendPresenceUpdate('paused', jid).catch(() => {});
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -365,6 +431,13 @@ app.post('/api/reset', async (_req, res) => {
   }
 });
 
+// Contact lookup for voice commands ("send Ahmad ..."). Groups only when asked for explicitly.
+app.get('/api/contacts/search', (req, res) => {
+  const query = String(req.query.q || '').slice(0, 80);
+  const groups = req.query.groups === '1';
+  return res.json({ success: true, matches: contacts.search(query, { groups, limit: 5, ownNumber: node.phone || '' }) });
+});
+
 app.post('/api/send', async (req, res) => {
   const { remoteJid, text } = req.body || {};
   if (typeof remoteJid !== 'string' || typeof text !== 'string' || !text.trim()) {
@@ -374,8 +447,10 @@ app.post('/api/send', async (req, res) => {
     return res.status(503).json({ success: false, error: 'NOT_CONNECTED' });
   }
   try {
-    await node.sock.sendMessage(remoteJid, { text: text.slice(0, 4096) });
-    return res.json({ success: true });
+    await node.sock.sendPresenceUpdate('composing', remoteJid).catch(() => {});
+    const sent = await node.sock.sendMessage(remoteJid, { text: text.slice(0, 4096) });
+    await node.sock.sendPresenceUpdate('paused', remoteJid).catch(() => {});
+    return res.json({ success: true, messageId: sent?.key?.id || null });
   } catch (error) {
     return res.status(500).json({ success: false, error: error?.message || 'SEND_FAILED' });
   }

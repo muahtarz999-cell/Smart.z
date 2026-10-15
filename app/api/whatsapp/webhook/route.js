@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 import { AssistantResponseError, generateAssistantReply } from '../../../../lib/assistant-response';
+import { transcribeAudio } from '../../../../lib/transcription';
 
 export const runtime = 'edge';
 
@@ -196,19 +197,43 @@ function getMetaGraphApiVersion() {
   return apiVersion;
 }
 
+// Voice notes: Graph API gives a short-lived URL for the media id; both calls need the customer's token.
+async function downloadVoiceNote(mediaId, accessToken) {
+  const apiVersion = getMetaGraphApiVersion();
+  const metaResponse = await fetch(`https://graph.facebook.com/${apiVersion}/${encodeURIComponent(mediaId)}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(8_000),
+  });
+  const meta = await metaResponse.json().catch(() => null);
+  if (!metaResponse.ok || !meta?.url) throw new WebhookError('MEDIA_LOOKUP_FAILED', 502);
+  if (Number(meta.file_size || 0) > 5 * 1024 * 1024) throw new WebhookError('MEDIA_TOO_LARGE', 413);
+  const mediaResponse = await fetch(meta.url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!mediaResponse.ok) throw new WebhookError('MEDIA_DOWNLOAD_FAILED', 502);
+  return { bytes: new Uint8Array(await mediaResponse.arrayBuffer()), type: meta.mime_type || 'audio/ogg' };
+}
+
 async function processMessage(database, value, message) {
-  if (message.type !== 'text') return;
+  if (message.type !== 'text' && message.type !== 'audio') return;
 
   const phoneNumberId = value?.metadata?.phone_number_id;
   const recipient = message.from;
-  const text = message.text?.body;
   if (!/^\d+$/.test(phoneNumberId || '') || !/^\d{5,20}$/.test(recipient || '')) {
     throw new WebhookError('MESSAGE_METADATA_INVALID', 400);
   }
-  if (typeof text !== 'string' || !text.trim()) return;
 
   const credentials = await getCustomerWhatsAppCredentials(database, phoneNumberId);
   if (!credentials) return;
+
+  let text = message.text?.body;
+  if (message.type === 'audio') {
+    if (!message.audio?.id) return;
+    const voiceNote = await downloadVoiceNote(message.audio.id, credentials.accessToken);
+    text = await transcribeAudio(voiceNote.bytes, voiceNote.type);
+  }
+  if (typeof text !== 'string' || !text.trim()) return;
 
   const reply = await generateAssistantReply(text.trim(), { channel: 'whatsapp' });
   await sendWhatsAppText(phoneNumberId, recipient, reply, credentials.accessToken);
@@ -281,7 +306,7 @@ export async function POST(request) {
   for (const entry of payload.entry || []) {
     for (const change of entry.changes || []) {
       for (const message of change.value?.messages || []) {
-        if (message?.type === 'text' && typeof message.id === 'string' && message.id) {
+        if ((message?.type === 'text' || message?.type === 'audio') && typeof message.id === 'string' && message.id) {
           textMessages.push({ value: change.value, message });
         }
       }

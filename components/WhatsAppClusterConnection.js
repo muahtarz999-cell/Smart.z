@@ -47,6 +47,7 @@ export default function WhatsAppClusterConnection({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [allowlistDraft, setAllowlistDraft] = useState(null);
   const runRef = useRef(0); // increments to cancel any running wait loop
 
   const api = useCallback(async (url, init = {}) => {
@@ -155,23 +156,27 @@ export default function WhatsAppClusterConnection({
     }
   }
 
-  async function toggleAutoReply() {
+  async function saveRules(changes) {
     setBusy(true);
     setError('');
     try {
       const { ok, data } = await api('/api/whatsapp/cluster/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ autoReply: !status.autoReply }),
+        body: JSON.stringify(changes),
       });
       if (!ok) throw new Error(data.error || 'تعذر حفظ الإعداد.');
-      setStatus((current) => ({ ...current, autoReply: data.autoReply }));
-    } catch (toggleError) {
-      setError(toggleError.message);
+      setStatus((current) => ({ ...current, ...data }));
+      return true;
+    } catch (saveError) {
+      setError(saveError.message);
+      return false;
     } finally {
       setBusy(false);
     }
   }
+
+  const toggleAutoReply = () => saveRules({ autoReply: !status.autoReply });
 
   function copyCode() {
     if (!pairingCode) return;
@@ -239,13 +244,47 @@ export default function WhatsAppClusterConnection({
               <label className="flex items-center justify-between gap-3 rounded-lg border border-base-border p-3">
                 <span className="text-xs leading-5 text-text-secondary">
                   <span className="block text-sm text-text-primary">الرد التلقائي</span>
-                  عند التفعيل يرد المساعد على كل رسالة نصية فردية تصلك (لا المجموعات).
+                  عند التفعيل يرد المساعد على الرسائل النصية والصوتية الفردية التي تصلك (لا المجموعات).
                 </span>
                 <button type="button" role="switch" aria-checked={status.autoReply} disabled={busy} onClick={toggleAutoReply}
                   className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors ${status.autoReply ? 'bg-gold' : 'bg-base-border'}`}>
                   <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${status.autoReply ? 'right-0.5' : 'right-[22px]'}`} />
                 </button>
               </label>
+              {status.autoReply && (
+                <div className="space-y-3 rounded-lg border border-base-border p-3">
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-text-secondary">من يرد عليهم</span>
+                    <select value={status.replyScope || 'all'} disabled={busy}
+                      onChange={(event) => saveRules({ replyScope: event.target.value })}
+                      className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-sm text-text-primary">
+                      <option value="all">الجميع (المحادثات الفردية فقط)</option>
+                      <option value="allowlist">أرقام محددة فقط</option>
+                    </select>
+                  </label>
+                  {status.replyScope === 'allowlist' && (
+                    <label className="block space-y-1.5">
+                      <span className="text-xs text-text-secondary">الأرقام مع رمز الدولة، رقم في كل سطر</span>
+                      <textarea dir="ltr" rows={4} value={allowlistDraft ?? (status.allowedNumbers || []).join('\n')}
+                        onChange={(event) => setAllowlistDraft(event.target.value)}
+                        className="w-full rounded-md border border-base-border bg-base-panel px-3 py-2 text-left text-sm text-text-primary" />
+                      <button type="button" disabled={busy || allowlistDraft === null}
+                        onClick={async () => { if (await saveRules({ allowedNumbers: allowlistDraft.split(/[\s,،]+/) })) setAllowlistDraft(null); }}
+                        className="min-h-9 w-full rounded-md border border-gold/40 px-3 text-xs text-gold disabled:opacity-50">حفظ الأرقام</button>
+                    </label>
+                  )}
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-text-secondary">شكل الرد</span>
+                    <select value={status.voiceReplyMode || 'match'} disabled={busy}
+                      onChange={(event) => saveRules({ voiceReplyMode: event.target.value })}
+                      className="h-10 w-full rounded-md border border-base-border bg-base-panel px-3 text-sm text-text-primary">
+                      <option value="match">مثل الرسالة: الصوتية بصوت والمكتوبة بكتابة</option>
+                      <option value="text">كتابة دائماً</option>
+                      <option value="voice">رسالة صوتية دائماً</option>
+                    </select>
+                  </label>
+                </div>
+              )}
               <button type="button" disabled={busy} onClick={disconnect}
                 className="min-h-10 w-full rounded-lg border border-red-500/40 px-3 text-sm text-red-300 disabled:opacity-60">
                 فك الربط ومسح الجلسة

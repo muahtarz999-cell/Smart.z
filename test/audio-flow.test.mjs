@@ -55,6 +55,8 @@ function setup(options = {}, responses = {}) {
     getPreferences: () => ({ responseStyle: 'short', language: 'ar' }),
     getContext: async () => options.context || {},
     onTurnComplete: () => { globalThis.__flowEvents.push('turn-complete'); },
+    onAction: (action) => { globalThis.__flowEvents.push(`action:${action.type}`); },
+    interceptTranscript: options.intercept || (() => false),
     onStateChange: (state) => states.push(state),
     onError: (error) => errors.push(error),
   });
@@ -129,4 +131,18 @@ test('learning context is sent with the request and learning is triggered after 
   assert.deepEqual(body.profile, { name: 'فهد' });
   assert.deepEqual(body.memories, ['يحب القهوة']);
   assert.ok(globalThis.__flowEvents.includes('turn-complete'));
+});
+
+test('an action from the assistant is handed over after the reply is spoken', async () => {
+  const { manager } = setup({}, { '/api/assistant': { status: 200, body: { reply: 'تم، أرسلت لأمي.', action: { type: 'whatsapp_send' } } } });
+  await manager.respondTo('أرسل لأمي إني جاي');
+  const events = globalThis.__flowEvents;
+  assert.ok(events.indexOf('speak:تم، أرسلت لأمي.') < events.indexOf('action:whatsapp_send'));
+});
+
+test('an intercepted utterance ("تراجع") never reaches the assistant', async () => {
+  const { manager, requests } = setup({ intercept: (text) => text === 'كم الساعة؟' });
+  await manager.beginTurn();
+  assert.equal(await manager.endTurn(), true);
+  assert.ok(!requests.some((r) => r.url === '/api/assistant'));
 });

@@ -19,7 +19,14 @@ export async function GET(request) {
     return json({ status: 'DISCONNECTED', connected: false, assigned: false, autoReply: false });
   }
 
-  const base = { assigned: true, nodeId: assignment.node_id, autoReply: assignment.auto_reply_enabled === true };
+  const base = {
+    assigned: true,
+    nodeId: assignment.node_id,
+    autoReply: assignment.auto_reply_enabled === true,
+    replyScope: assignment.reply_scope || 'all',
+    allowedNumbers: assignment.allowed_numbers || [],
+    voiceReplyMode: assignment.voice_reply_mode || 'match',
+  };
   const node = getClusterNode(assignment.node_id);
   if (!node) return json({ ...base, status: 'ERROR', connected: false, error: CLUSTER_MESSAGES.ASSIGNED_NODE_NOT_CONFIGURED }, 503);
 
