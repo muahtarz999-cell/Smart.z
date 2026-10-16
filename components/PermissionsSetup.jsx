@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from 'react';
 import { getMicrophonePermissionState, requestMicrophonePermission } from '../lib/voice-recorder';
-import { canOpenSpeechEngineSettings, openSpeechEngineSettings } from '../lib/tts';
+import { canOpenSpeechEngineSettings, describeNativeSpeechProblem, openSpeechEngineSettings } from '../lib/tts';
 import { primeSpeech, testVoice as runVoiceTest } from '../lib/speech';
 import { areTaskRemindersSupported, requestTaskReminderPermission } from '../lib/task-notifications';
 import { setLearningConsent } from '../lib/learning';
@@ -114,6 +114,10 @@ export default function PermissionsSetup({ onDone, onSkip }) {
         } else {
           setVoice('failed');
           setVoiceMessage(result.error || 'لم يكتمل تشغيل الصوت.');
+          // Where the phone's own voice stops (engine, Arabic data), from the native plugin.
+          describeNativeSpeechProblem().then((diagnosis) => {
+            if (diagnosis) setVoiceMessage(`${result.error || 'لم يكتمل تشغيل الصوت.'}\n${diagnosis}`);
+          });
         }
       })
       .catch((error) => {
@@ -207,7 +211,7 @@ export default function PermissionsSetup({ onDone, onSkip }) {
               تثبيت الصوت العربي في Android
             </button>
           )}
-          {voiceMessage && <p role="alert" className="text-amber-300">{voiceMessage}</p>}
+          {voiceMessage && <p role="alert" className="whitespace-pre-line text-amber-300">{voiceMessage}</p>}
         </StepCard>
 
         {notifications !== 'unsupported' && (
