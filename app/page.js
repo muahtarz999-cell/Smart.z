@@ -423,19 +423,63 @@ export default function Home() {
     };
   }, [customerDataReady]);
 
+  // The menu and its sections are history entries, so the phone's back
+  // button (and the browser's) steps back one level instead of leaving.
+  const menuDepth = menuOpen ? (activeSection ? 2 : 1) : 0;
+  const menuHistoryDepthRef = useRef(0);
+  const ignoredPopsRef = useRef(0);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const pushed = menuHistoryDepthRef.current;
+    if (menuDepth > pushed) {
+      for (let depth = pushed + 1; depth <= menuDepth; depth += 1) {
+        window.history.pushState({ smartzMenu: depth }, '');
+      }
+      menuHistoryDepthRef.current = menuDepth;
+    } else if (menuDepth < pushed) {
+      // Closed from a button: drop the entries we added (one popstate follows).
+      menuHistoryDepthRef.current = menuDepth;
+      ignoredPopsRef.current += 1;
+      window.history.go(menuDepth - pushed);
+    }
+  }, [menuDepth]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (ignoredPopsRef.current > 0) {
+        ignoredPopsRef.current -= 1;
+        return;
+      }
+      const depth = menuHistoryDepthRef.current;
+      if (depth === 0) return;
+      menuHistoryDepthRef.current = depth - 1;
+      if (depth === 2) {
+        setActiveSection(null);
+      } else {
+        setMenuOpen(false);
+        setActiveSection(null);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
   useEffect(() => {
     if (!menuOpen) return undefined;
 
     const closeOnEscape = (event) => {
-      if (event.key === 'Escape') {
-        setMenuOpen(false);
+      if (event.key !== 'Escape') return;
+      if (activeSection) {
         setActiveSection(null);
+      } else {
+        setMenuOpen(false);
       }
     };
 
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [menuOpen]);
+  }, [menuOpen, activeSection]);
 
   useEffect(() => {
     if (activeSection !== 'audio') return undefined;
@@ -1182,14 +1226,22 @@ export default function Home() {
           >
             <div className="flex items-center justify-between border-b border-base-border px-5 py-4">
               {activeSection ? (
-                <button
-                  type="button"
-                  onClick={() => setActiveSection(null)}
-                  className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary"
-                >
-                  <span aria-hidden="true">→</span>
-                  <span>القائمة</span>
-                </button>
+                <div className="flex min-w-0 items-center gap-3">
+                  <button
+                    type="button"
+                    aria-label="رجوع إلى القائمة"
+                    onClick={() => setActiveSection(null)}
+                    className="flex min-h-10 shrink-0 items-center gap-1.5 rounded-lg border border-gold/40 px-3 text-sm font-semibold text-gold hover:bg-gold/10"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M9 6l6 6-6 6" />
+                    </svg>
+                    <span>رجوع</span>
+                  </button>
+                  <p className="truncate text-sm font-semibold text-text-primary">
+                    {MENU_SECTIONS.find((section) => section.id === activeSection)?.label || ''}
+                  </p>
+                </div>
               ) : (
                 <div>
                   <p className="text-sm font-semibold text-gold">Smart.z</p>
