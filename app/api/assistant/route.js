@@ -40,6 +40,7 @@ export async function POST(request) {
       memories: body.memories,
       documentContext: body.documentContext, // passages from a local file, chosen on the device
       tools: node ? [WHATSAPP_SEND_TOOL] : [],
+      whatsappLinked: Boolean(node),
     });
 
     const send = turn.toolCalls.find((call) => call.name === 'send_whatsapp_message');
