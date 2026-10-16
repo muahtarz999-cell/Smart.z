@@ -25,6 +25,7 @@ import {
   openWhatsAppChat,
 } from '../lib/native-apps';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { installDeviceHeader } from '../lib/device-lock';
 import {
   clearAllLocalData,
   deleteLocalRecord,
@@ -56,6 +57,9 @@ import {
   getTaskReminderStatus,
   synchronizeTaskReminders,
 } from '../lib/task-notifications';
+
+// Every same-origin /api/ call carries this install's id (one device per account).
+if (typeof window !== 'undefined') installDeviceHeader(window);
 
 const MENU_SECTIONS = [
   { id: 'profile', label: 'ملفي' },

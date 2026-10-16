@@ -207,6 +207,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         config = next;
         baseUrl = next.optString("baseUrl", "").replaceAll("/+$", "");
         token = next.optString("accessToken", "");
+        DriveClient.deviceId = next.optString("deviceId", "");
         expiresAt = next.optLong("expiresAt", 0);
         JSONArray seed = next.optJSONArray("history");
         history = seed != null ? seed : new JSONArray();
