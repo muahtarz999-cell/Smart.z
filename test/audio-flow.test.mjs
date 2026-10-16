@@ -3,49 +3,6 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const source = await readFile(new URL('../lib/audio-flow.js', import.meta.url), 'utf8');
-const testableSource = source
-  .replace(
-    "import { VoiceActivityDetector } from './vad';",
-    `let vadStart = async () => true;
-     let vadStopCalls = 0;
-     class VoiceActivityDetector {
-       constructor() { this.isSpeaking = false; }
-       async start() {
-         const started = await vadStart();
-         this.isRunning = started;
-         return started;
-       }
-       stop() { this.isRunning = false; vadStopCalls += 1; }
-       setInterruptMode() {}
-     }`
-  )
-  .replace(
-    "import { speak, stopSpeaking } from './tts';",
-    'const speak = async () => true; const stopSpeaking = () => {};'
-  )
-  .replace(
-    "import { addMessage, getRecentMessages } from './conversation';",
-    'const addMessage = async () => {}; const getRecentMessages = async () => [];'
-  )
-  .replace(
-    "import { resolveVoiceTrigger } from './voice-trigger';",
-    'const resolveVoiceTrigger = (text) => ({ triggered: false, text });'
-  );
-const audioFlowModule = await import(
-  `data:text/javascript;base64,${Buffer.from(
-    `${testableSource}\nexport const testControls = { setVADStart: (start) => { vadStart = start; }, get vadStopCalls() { return vadStopCalls; } };`
-  ).toString('base64')}`
-);
-
-function createManager() {
-  Object.defineProperty(globalThis, 'navigator', {
-    configurable: true,
-    value: {
-      mediaDevices: {
-        getUserMedia: async () => ({
-          getTracks: () => [{ stop() {} }],
-        }),
-      },
 const testable = source
   .replace("import { VoiceRecorder } from './voice-recorder';", 'class VoiceRecorder {}')
   .replace("import { primeSpeech, speak, stopSpeaking } from './speech';",
@@ -55,6 +12,8 @@ const testable = source
   .replace("import { addMessage, getRecentMessages } from './conversation';",
     `const addMessage = async (role, content) => { globalThis.__flowHistory.push({ role, content }); };
      const getRecentMessages = async (limit) => globalThis.__flowHistory.slice(-limit);`)
+  .replace("import { resolveVoiceTrigger } from './voice-trigger';",
+    `import { resolveVoiceTrigger } from '${new URL('../lib/voice-trigger.js', import.meta.url).href}';`)
   .replace("from './driving-commands'", `from '${new URL('../lib/driving-commands.js', import.meta.url).href}'`);
 
 globalThis.__flowEvents = [];
@@ -166,6 +125,29 @@ test('typed messages use the same pipeline without opening the microphone', asyn
   assert.equal(reply, 'الساعة الثالثة.');
   assert.ok(!globalThis.__flowEvents.includes('mic-open'));
   assert.equal(JSON.parse(requests[0].init.body).channel, 'text');
+});
+
+test('voice trigger aliases are removed before sending the transcript to the assistant', async () => {
+  const { manager, requests } = setup({}, {
+    '/api/transcribe': { status: 200, body: { text: 'يا سمارت افتح الملاحظات' } },
+  });
+  const result = await manager.respondToRecording(new Blob(['x']));
+  const ask = JSON.parse(requests.find((request) => request.url === '/api/assistant').init.body);
+  assert.equal(result.status, 'replied');
+  assert.equal(ask.message, 'افتح الملاحظات');
+});
+
+test('speaking only a voice trigger alias asks for clarification locally', async () => {
+  const { manager, requests, states } = setup({}, {
+    '/api/transcribe': { status: 200, body: { text: 'يا سمارت' } },
+  });
+  const replies = [];
+  manager.onReply = (reply) => replies.push(reply);
+  const result = await manager.respondToRecording(new Blob(['x']));
+  assert.equal(result.status, 'handled');
+  assert.deepEqual(replies, ['نعم، كيف أستطيع مساعدتك؟']);
+  assert.equal(requests.some((request) => request.url === '/api/assistant'), false);
+  assert.equal(states.at(-1), 'ready');
 });
 
 test('learning context is sent with the request and learning is triggered after the reply', async () => {
