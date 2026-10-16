@@ -2,8 +2,22 @@
 
 import { useEffect, useRef, useState } from 'react';
 import AssistantOrb from '../components/AssistantOrb';
+import VoiceWave from '../components/VoiceWave';
 import LocalDataPanel from '../components/LocalDataPanel';
+import FilesPanel from '../components/FilesPanel';
+import FileIntake from '../components/FileIntake';
+import DocumentsPanel from '../components/DocumentsPanel';
+import StudyPanel from '../components/StudyPanel';
+import { prepareAttachmentContext } from '../lib/attachments';
+import { hasFileAnalysisConsent, latestFile, setFileAnalysisConsent } from '../lib/file-store';
+import { documentToDocx, findDocumentByTitle } from '../lib/documents';
+import { blobToBase64 } from '../lib/file-processing';
+import { templateFromRequest } from '../lib/document-templates';
+import { answerVoiceQuiz, isVoiceQuizActive } from '../lib/voice-quiz';
 import WhatsAppClusterConnection from '../components/WhatsAppClusterConnection';
+import PermissionsSetup, { readSetupState } from '../components/PermissionsSetup';
+import LearningPanel from '../components/LearningPanel';
+import { getAssistantContext, learnFromRecentConversation } from '../lib/learning';
 import { AudioFlowManager } from '../lib/audio-flow';
 import {
   openInstalledApp,
@@ -24,25 +38,35 @@ import {
   getSpeechDiagnostics,
   isSpeechSupported,
   openSpeechEngineSettings,
-  speak,
+  preloadArabicVoice,
   testSpeechPlayback,
 } from '../lib/tts';
+import { configureSpeech, getVoiceSettings, primeSpeech, speak as speakReply } from '../lib/speech';
+import VoiceSettings from '../components/VoiceSettings';
+import SendActionBanner from '../components/SendActionBanner';
+import SendSettings from '../components/SendSettings';
+import { cancelPendingSend, configureSendActions, getActionSettings, isCancelCommand, queueSend } from '../lib/send-actions';
+import DrivingSettings from '../components/DrivingSettings';
+import DrivingScreen from '../components/DrivingScreen';
+import { DrivingController } from '../lib/driving-mode';
+import { DRIVING_MESSAGES, isDrivingStartCommand, isDrivingStopCommand } from '../lib/driving-commands';
+import { addMessage, getRecentMessages } from '../lib/conversation';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import {
   getTaskReminderStatus,
   synchronizeTaskReminders,
 } from '../lib/task-notifications';
-import {
-  clearWhatsAppSignupState,
-  setWhatsAppSignupPhase,
-} from '../lib/whatsapp-signup-state';
 
 const MENU_SECTIONS = [
   { id: 'profile', label: 'ملفي' },
   { id: 'learning', label: 'التعلم والتخصيص' },
   { id: 'notes', label: 'ملاحظاتي' },
   { id: 'tasks', label: 'مهامي' },
+  { id: 'files', label: 'ملفاتي' },
+  { id: 'documents', label: 'مستنداتي' },
+  { id: 'study', label: 'المذاكرة' },
   { id: 'audio', label: 'الصوت' },
+  { id: 'driving', label: 'وضع القيادة' },
   { id: 'apps', label: 'ربط التطبيقات' },
   { id: 'privacy', label: 'الخصوصية والبيانات' },
 ];
@@ -118,7 +142,6 @@ export default function Home() {
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
   const [whatsappBusy, setWhatsappBusy] = useState(false);
-  const [whatsappPhase, setWhatsappPhase] = useState('idle');
   const [whatsappConnectionLoading, setWhatsappConnectionLoading] = useState(false);
   const [whatsappError, setWhatsappError] = useState('');
   const [whatsappMetaConnection, setWhatsappMetaConnection] = useState(null);
@@ -138,17 +161,33 @@ export default function Home() {
   const [audioDiagnosticsLoading, setAudioDiagnosticsLoading] = useState(false);
   const [audioPlaybackError, setAudioPlaybackError] = useState('');
   const [audioSetupOpening, setAudioSetupOpening] = useState(false);
-  const [audioStarting, setAudioStarting] = useState(false);
   const [taskNotificationStatus, setTaskNotificationStatus] = useState(null);
-  const [orbState, setOrbState] = useState('idle');
+  const [orbState, setOrbState] = useState('ready');
+  const [lastTranscript, setLastTranscript] = useState('');
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [learningVersion, setLearningVersion] = useState(0);
+  const [attachment, setAttachment] = useState(null); // a file from "ملفاتي" the next questions are about
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [documentTemplateRequest, setDocumentTemplateRequest] = useState(null);
+  const [studyFileId, setStudyFileId] = useState(null);
+  const attachmentRef = useRef(null);
+  const intakeRef = useRef(null);
   const audioFlowRef = useRef(null);
+  const drivingRef = useRef(null);
+  const [driving, setDriving] = useState({ active: false, engine: null, phase: 'idle' });
+  const pressStartedAtRef = useRef(0);
+  const micLevelRef = useRef(0); // written by the recorder ~10x/s, read by the wave without re-rendering
+  const profileRef = useRef(DEFAULT_PROFILE);
   const [customerDataUserId, setCustomerDataUserId] = useState(null);
   const skipProfileSaveRef = useRef(false);
   const profileEditPendingRef = useRef(false);
 
   const customerDataReady = Boolean(authUser?.id && customerDataUserId === authUser.id);
   const orbSize = expanded ? 190 : 128;
-  const panelMaxWidth = expanded ? 420 : 340;
+  // During a conversation the orb becomes a vibrating line and the text gets the space.
+  const conversationActive = Boolean(reply || lastTranscript || loading)
+    || ['preparing', 'listening', 'transcribing', 'thinking', 'speaking'].includes(orbState);
+  const panelMaxWidth = conversationActive ? 480 : expanded ? 420 : 340;
 
   useEffect(() => {
     let active = true;
@@ -440,70 +479,214 @@ export default function Home() {
     };
   }, [activeSection]);
 
-  // تهيئة تدفق الصوت وبدء الاستماع بعد تفاعل المستخدم
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
+
+  // Always a fresh token: the session refreshes hourly and a captured token goes stale.
+  async function getAccessToken() {
+    if (!supabase) return null;
+    const { data, error } = await supabase.auth.getSession();
+    return error ? null : data.session?.access_token ?? null;
+  }
+
+  useEffect(() => { attachmentRef.current = attachment; }, [attachment]);
+
+  // Context for a question about a file: the attached one, or the latest when the question says "الملف".
+  async function prepareAttachment(question) {
+    let file = attachmentRef.current;
+    if (!file && /(آخر|اخر|الأخير|الاخير)\s*ملف|الملف|المستند المرفق/.test(question)) file = await latestFile();
+    if (!file) return null;
+    if (!hasFileAnalysisConsent()) {
+      const allowed = window.confirm('سيُرسل محتوى هذا الملف (أو الصفحات المتعلقة بسؤالك فقط) إلى مزوّد الذكاء الاصطناعي للتحليل، ولا تحفظه Smart.z. موافق؟ (لن نسألك مرة أخرى)');
+      if (!allowed) throw new Error('لم يُرسل الملف. يمكنك السؤال دون إرفاق ملف.');
+      setFileAnalysisConsent(true);
+    }
+    return prepareAttachmentContext(file.id, question);
+  }
+
+  function say(text) {
+    setReply(text);
+    speakReply(text).catch(() => {});
+  }
+
+  /** Utterances handled on the device without the assistant: quiz answers, "تراجع", "اكتب لي عقد". */
+  function interceptLocally(text) {
+    const drivingMode = drivingRef.current;
+    if (drivingMode?.active && isDrivingStopCommand(text)) {
+      setReply(DRIVING_MESSAGES.stopped);
+      void drivingMode.stop('user');
+      return true;
+    }
+    if (isDrivingStartCommand(text) && drivingMode) {
+      if (drivingMode.active) say('وضع القيادة يعمل بالفعل.');
+      else void drivingMode.start();
+      return true;
+    }
+    if (isVoiceQuizActive()) {
+      say(answerVoiceQuiz(text) || '');
+      return true;
+    }
+    if (isCancelCommand(text) && cancelPendingSend()) {
+      setReply('ألغيت الإرسال.');
+      return true;
+    }
+    const template = templateFromRequest(text);
+    if (template) {
+      setDocumentTemplateRequest(template.id);
+      setActiveSection('documents');
+      setMenuOpen(true);
+      say(`فتحت لك قالب ${template.title}. أجب على الأسئلة وسأكتب المسودة.`);
+      return true;
+    }
+    return false;
+  }
+
+  // First run on this device: ask for permissions and prove the voice plays.
+  useEffect(() => {
+    if (!customerDataReady) return;
+    if (!readSetupState()) setSetupOpen(true);
+    void preloadArabicVoice();
+  }, [customerDataReady]);
+
   useEffect(() => {
     if (customerAccess.status !== 'active' || !authUser) return undefined;
 
+    configureSpeech({ getAccessToken });
+    configureSendActions({
+      getAccessToken,
+      resolveAttachment: async (action) => {
+        const doc = await findDocumentByTitle(action.attachDocument);
+        if (!doc) return null;
+        const file = documentToDocx(doc);
+        return { data: await blobToBase64(file), fileName: file.name, mimetype: file.type };
+      },
+      onResult: (result) => {
+        if (!result.ok) setAudioPlaybackError(result.error?.message || result.data?.error || 'تعذر إرسال رسالة واتساب.');
+      },
+    });
     const audioFlow = new AudioFlowManager({
-      getAccessToken: async () => {
-        const { data, error } = await supabase.auth.getSession();
-        return error ? null : data.session?.access_token ?? null;
+      getAccessToken,
+      getPreferences: () => ({
+        responseStyle: profileRef.current.responseStyle,
+        language: profileRef.current.language,
+        confirmEverySend: getActionSettings().confirmEverySend,
+      }),
+      getContext: getAssistantContext,
+      onAction: queueSend,
+      interceptTranscript: (text) => interceptLocally(text),
+      prepareAttachment,
+      onTurnComplete: () => {
+        // Runs in the background; learning must never slow down or break a conversation.
+        learnFromRecentConversation({ getAccessToken })
+          .then((profile) => { if (profile) setLearningVersion((v) => v + 1); })
+          .catch((error) => console.warn('[Learning]', error?.message));
       },
-      onStateChange: (state) => {
-        console.log('[Page] Audio state:', state);
-        setOrbState(state);
-      },
+      onStateChange: (state) => setOrbState(state),
+      onLevel: (level) => { micLevelRef.current = level; },
+      onTranscript: (text) => setLastTranscript(text),
       onReply: (text) => {
         setReply(text);
         setAudioPlaybackError('');
       },
-      onAudioError: (error) => {
-        console.error('[Page] Audio error:', error);
-        if (
-          error?.name === 'SpeechSynthesisError' ||
-          error?.message?.startsWith('تعذر تشغيل الرد الصوتي') ||
-          error?.message?.startsWith('تعذر نطق الرد') ||
-          error?.message?.startsWith('لم يعثر محرك النطق على صوت عربي') ||
-          error?.message?.startsWith('النطق الصوتي غير مدعوم') ||
-          error?.message?.startsWith('واجهة النطق الصوتي غير متاحة') ||
-          error?.message?.startsWith('لم يسمح النظام بتشغيل النطق')
-        ) {
-          setAudioPlaybackError(error.message);
-        } else if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(error?.name)) {
-          setAudioPlaybackError('لم يُسمح باستخدام الميكروفون. اسمح بالوصول إليه من إعدادات الموقع أو التطبيق ثم أعد المحاولة.');
-        } else if (['NotFoundError', 'DevicesNotFoundError'].includes(error?.name)) {
-          setAudioPlaybackError('لم يتم العثور على ميكروفون متاح على هذا الجهاز.');
-        } else if (['NotReadableError', 'TrackStartError'].includes(error?.name)) {
-          setAudioPlaybackError('تعذر تشغيل الميكروفون. تحقق من أنه غير مستخدم في تطبيق آخر ثم أعد المحاولة.');
-        } else {
-          setAudioPlaybackError('تعذر تفعيل الميكروفون. تحقق من اتصال آمن وأذونات الميكروفون ثم أعد المحاولة.');
-        }
+      onError: (error) => {
+        console.error('[Voice]', error);
+        setAudioPlaybackError(error?.message || 'حدث خطأ في المحادثة الصوتية.');
       },
     });
     audioFlowRef.current = audioFlow;
 
+    const readSession = async () => {
+      const { data } = await supabase.auth.getSession();
+      const session = data?.session;
+      return { accessToken: session?.access_token || null, expiresAt: session?.expires_at ? session.expires_at * 1000 : 0 };
+    };
+    const drivingMode = new DrivingController({
+      audioFlow,
+      getAccessSession: readSession,
+      // Everything the Android service needs to hold a conversation on its own while the app is in the background.
+      getNativeContext: async () => {
+        const session = await readSession();
+        if (!session.accessToken) throw new Error('انتهت جلسة الدخول.');
+        const context = await Promise.resolve(getAssistantContext()).catch(() => ({})) || {};
+        const history = await getRecentMessages(6).catch(() => []);
+        const voice = getVoiceSettings();
+        const actions = getActionSettings();
+        return {
+          baseUrl: window.location.origin,
+          ...session,
+          history: history.map(({ role, content }) => ({ role, content })),
+          profile: context.profile || null,
+          memories: Array.isArray(context.memories) ? context.memories : [],
+          preferences: { responseStyle: profileRef.current.responseStyle || '', language: profileRef.current.language || '' },
+          voice: { provider: voice.provider, voices: voice.voices, deviceFallback: voice.deviceFallback },
+          undoSeconds: actions.undoSeconds,
+          confirmEverySend: actions.confirmEverySend,
+        };
+      },
+      onChange: (next) => {
+        setDriving({ active: next.active, engine: next.engine, phase: next.phase });
+        if (next.message) setAudioPlaybackError(next.message);
+      },
+      onLevel: (level) => { micLevelRef.current = level; },
+      onNativeTurn: ({ transcript, reply: spoken }) => {
+        if (transcript) { setLastTranscript(transcript); addMessage('user', transcript).catch(() => {}); }
+        if (spoken) { setReply(spoken); addMessage('assistant', spoken).catch(() => {}); }
+      },
+      // Sends the service could not finish alone (more than 5 people, a document): they wait here for a tap.
+      onNativeAction: (action) => queueSend(action),
+    });
+    drivingRef.current = drivingMode;
+    void drivingMode.attachToRunningService();
+
     return () => {
+      drivingMode.destroy();
+      if (drivingRef.current === drivingMode) drivingRef.current = null;
       audioFlow.destroy();
       if (audioFlowRef.current === audioFlow) audioFlowRef.current = null;
     };
   }, [customerAccess.status, authUser?.id]);
 
-  async function startAudioListening() {
-    const audioFlow = audioFlowRef.current;
-    if (!audioFlow || audioStarting || audioFlow.isStarting || audioFlow.isListening) return;
+  // The Android driving service needs each refreshed token (sessions refresh hourly).
+  useEffect(() => {
+    if (!authSession?.access_token) return;
+    void drivingRef.current?.updateSession({
+      accessToken: authSession.access_token,
+      expiresAt: authSession.expires_at ? authSession.expires_at * 1000 : 0,
+    });
+  }, [authSession?.access_token]);
 
-    setAudioStarting(true);
+  // Leaving the app (another app, locked screen): close the microphone and stay silent
+  // instead of hanging on "listening"; the reply still appears when the user returns.
+  useEffect(() => {
+    const onVisibility = () => audioFlowRef.current?.setBackgrounded(document.visibilityState === 'hidden');
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
+  // Talk button: a short tap starts recording and a second tap sends;
+  // holding for more than 450 ms sends on release. No pointer capture: the
+  // permission dialog steals the pointer and used to cancel the first press.
+  function onTalkPress(event) {
+    event.preventDefault();
+    const audioFlow = audioFlowRef.current;
+    if (!audioFlow) return;
     setAudioPlaybackError('');
-    try {
-      const started = await audioFlow.start();
-      if (!started) setOrbState('error');
-    } finally {
-      setAudioStarting(false);
+    if (audioFlow.isRecording) {
+      void audioFlow.endTurn();
+      return;
     }
+    if (audioFlow.isBusy) return;
+    pressStartedAtRef.current = Date.now();
+    void audioFlow.beginTurn(); // synchronous part runs inside the gesture
   }
 
-  function stopAudioListening() {
-    audioFlowRef.current?.stopListening();
+  function onTalkRelease() {
+    const audioFlow = audioFlowRef.current;
+    if (!audioFlow?.isRecording || !pressStartedAtRef.current) return;
+    const heldFor = Date.now() - pressStartedAtRef.current;
+    pressStartedAtRef.current = 0;
+    if (heldFor > 450) void audioFlow.endTurn();
   }
 
   // عند المغادرة، تنظيف الموارد
@@ -522,35 +705,21 @@ export default function Home() {
   }, []);
 
   async function sendMessage(text) {
-    if (!text.trim() || customerAccess.status !== 'active' || !authSession?.access_token) return;
+    const audioFlow = audioFlowRef.current;
+    if (!text.trim() || customerAccess.status !== 'active' || !audioFlow) return;
+    if (interceptLocally(text.trim())) {
+      setLastTranscript(text.trim());
+      return;
+    }
     setLoading(true);
     setReply('');
+    setLastTranscript(text.trim());
+    setAudioPlaybackError('');
     try {
-      const res = await fetch('/api/assistant', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${authSession.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message: text }),
-      });
-      const data = await res.json();
-      const assistantReply = data.reply || 'حدث خطأ، حاول مجددًا.';
-      setReply(assistantReply);
-      setAudioPlaybackError('');
-      if (data.reply) {
-        const audioFlow = audioFlowRef.current;
-        const resumeListening = Boolean(audioFlow?.isVADRunning && audioFlow.vad?.isRunning);
-        if (resumeListening) audioFlow.vad.pause();
-        void speak(assistantReply).catch((error) => {
-          console.error('[TTS] Could not speak the text reply:', error);
-          setAudioPlaybackError(error?.message || 'تعذر تشغيل الرد صوتيًا؛ الرد النصي ما زال متاحًا.');
-        }).finally(() => {
-          if (resumeListening && audioFlow?.vad?.isRunning) audioFlow.vad.resume();
-        });
-      }
-    } catch (err) {
-      setReply('تعذر الاتصال بالمساعد الآن.');
+      await audioFlow.respondTo(text.trim(), { channel: 'text' });
+    } catch (error) {
+      setReply('');
+      setAudioPlaybackError(error?.message || 'تعذر الاتصال بالمساعد الآن.');
     } finally {
       setLoading(false);
     }
@@ -606,8 +775,6 @@ export default function Home() {
 
     setWhatsappBusy(true);
     setWhatsappError('');
-    setWhatsAppSignupPhase('starting');
-    setWhatsappPhase('starting');
     try {
       const startResponse = await fetch('/api/whatsapp/embedded-signup/start', {
         method: 'POST',
@@ -623,8 +790,6 @@ export default function Home() {
         throw new Error(config.message || 'تعذر بدء الربط الرسمي حاليًا.');
       }
 
-      setWhatsAppSignupPhase('awaiting-meta');
-      setWhatsappPhase('awaiting-meta');
       const facebook = await loadMetaSdk(config.appId);
       const result = await new Promise((resolve, reject) => {
         let authCode = null;
@@ -676,8 +841,6 @@ export default function Home() {
         });
       });
 
-      setWhatsAppSignupPhase('saving');
-      setWhatsappPhase('saving');
       const callbackResponse = await fetch('/api/whatsapp/embedded-signup/callback', {
         method: 'POST',
         headers: {
@@ -692,8 +855,6 @@ export default function Home() {
     } catch (error) {
       setWhatsappError(error?.message || 'تعذر بدء الربط الرسمي حاليًا.');
     } finally {
-      clearWhatsAppSignupState();
-      setWhatsappPhase('idle');
       setWhatsappBusy(false);
     }
   }
@@ -787,11 +948,27 @@ export default function Home() {
 
   return (
     <main className="min-h-screen flex items-center justify-center p-4">
+      {setupOpen && customerDataReady && (
+        <PermissionsSetup onDone={() => setSetupOpen(false)} onSkip={() => setSetupOpen(false)} />
+      )}
+      {driving.active && (
+        <DrivingScreen
+          phase={driving.engine === 'web' && ['transcribing', 'thinking', 'speaking'].includes(orbState) ? orbState : driving.phase}
+          levelRef={micLevelRef}
+          transcript={lastTranscript}
+          reply={reply}
+          error={audioPlaybackError}
+          onInterrupt={() => drivingRef.current?.interrupt()}
+          onStop={() => { setReply(DRIVING_MESSAGES.stopped); void drivingRef.current?.stop('user'); }}
+        />
+      )}
       <div
-        className="w-full transition-all duration-300"
+        className="w-full min-w-0 transition-all duration-300"
         style={{ maxWidth: panelMaxWidth }}
       >
-        <div className="bg-base-panel rounded-2xl border border-base-border overflow-hidden flex flex-col min-h-[420px]">
+        <div className={`bg-base-panel rounded-2xl border border-base-border overflow-hidden flex flex-col transition-all duration-300 ${
+          conversationActive ? 'h-[min(86dvh,720px)]' : 'min-h-[420px]'
+        }`}>
           {/* الشريط العلوي */}
           <div className="flex items-center justify-between px-4 py-3">
             <button
@@ -812,13 +989,14 @@ export default function Home() {
                 ? 'جارٍ التحقق من الحساب...'
                 : customerAccess.status !== 'active'
                   ? 'يتطلب حسابًا مفعّلًا'
-                  : loading
-                    ? 'جاري التفكير...'
-                    : orbState === 'listening' || orbState === 'listening-active'
-                      ? 'يستمع الآن'
-                      : orbState === 'transcribing' || orbState === 'thinking' || orbState === 'speaking'
-                        ? 'جارٍ معالجة الصوت...'
-                        : 'فعّل الميكروفون للاستماع'}
+                  : ({
+                    preparing: 'جارٍ فتح الميكروفون…',
+                    listening: 'يستمع الآن',
+                    transcribing: 'يحوّل كلامك إلى نص…',
+                    thinking: 'يفكر…',
+                    speaking: 'يتحدث',
+                    error: 'حدث خطأ',
+                  })[orbState] || (loading ? 'يفكر…' : 'جاهز')}
             </span>
             <button
               aria-label={expanded ? 'تصغير الشاشة' : 'توسيع الشاشة'}
@@ -831,69 +1009,131 @@ export default function Home() {
 
           {customerAccess.status === 'active' ? (
             <>
-              {/* الكرة والترحيب */}
-              <div className="flex-1 flex flex-col items-center justify-center px-6 py-6">
-                <AssistantOrb size={orbSize} state={orbState} />
+              {conversationActive ? (
+                // Conversation: a vibrating line on top, the words get the rest of the space.
+                <div className="flex min-h-0 flex-1 flex-col px-5 pt-3">
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <VoiceWave state={orbState} levelRef={micLevelRef} height={48} />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { audioFlowRef.current?.cancelTurn(); setReply(''); setLastTranscript(''); setAudioPlaybackError(''); }}
+                      className="shrink-0 rounded-md px-2 py-1 text-[11px] text-text-secondary hover:bg-base-card hover:text-text-primary"
+                    >
+                      محادثة جديدة
+                    </button>
+                  </div>
 
-                <p className="text-text-primary text-base font-medium mt-5">
-                  أهلًا بك
+                  <div className="mt-2 min-h-0 flex-1 space-y-4 overflow-y-auto pb-3">
+                    {lastTranscript && (
+                      <p className="mr-auto max-w-[85%] rounded-2xl rounded-tl-sm bg-base-card px-4 py-2 text-sm leading-7 text-text-secondary" dir="auto">
+                        {lastTranscript}
+                      </p>
+                    )}
+                    {reply ? (
+                      <p className="whitespace-pre-line text-[17px] leading-8 text-text-primary" dir="auto">{reply}</p>
+                    ) : (
+                      <p className="text-sm leading-7 text-text-secondary">
+                        {({
+                          preparing: 'جارٍ فتح الميكروفون…',
+                          listening: 'أسمعك… اضغط «إرسال» عند الانتهاء',
+                          transcribing: 'أكتب ما قلته…',
+                          thinking: 'أفكر في الرد…',
+                        })[orbState] || (loading ? 'أفكر في الرد…' : '')}
+                      </p>
+                    )}
+                    {audioPlaybackError && (
+                      <p role="status" className="text-xs leading-5 text-amber-300">{audioPlaybackError}</p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center px-6 py-6">
+                  <AssistantOrb size={orbSize} />
+                  <p className="text-text-primary text-base font-medium mt-5">أهلًا بك</p>
+                  <p className="text-text-secondary text-xs mt-1 text-center">اضغط الزر وتحدث، أو اكتب سؤالك</p>
+                  {audioPlaybackError && (
+                    <p role="status" className="mt-2 max-w-xs text-center text-xs leading-5 text-amber-300">{audioPlaybackError}</p>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-col items-center px-6 pb-3">
+                <button
+                  type="button"
+                  onPointerDown={onTalkPress}
+                  onPointerUp={onTalkRelease}
+                  onContextMenu={(event) => event.preventDefault()}
+                  onKeyDown={(event) => {
+                    if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) onTalkPress(event);
+                  }}
+                  disabled={orbState === 'transcribing' || orbState === 'thinking' || orbState === 'preparing'}
+                  aria-pressed={orbState === 'listening'}
+                  className={`${conversationActive ? 'mt-1' : 'mt-4'} min-h-12 min-w-[180px] touch-none select-none rounded-full px-5 text-sm font-semibold transition-colors disabled:cursor-wait disabled:opacity-60 ${
+                    orbState === 'listening' ? 'bg-red-500 text-white' : 'bg-gold text-base-bg'
+                  }`}
+                  style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+                >
+                  {({
+                    preparing: 'جارٍ فتح الميكروفون…',
+                    listening: 'إرسال ●',
+                    transcribing: 'جارٍ الفهم…',
+                    thinking: 'يفكر…',
+                    speaking: 'إيقاف وتحدث',
+                  })[orbState] || 'اضغط وتحدث'}
+                </button>
+                <p className={`mt-2 text-[11px] text-text-secondary ${conversationActive && orbState !== 'listening' ? 'hidden' : ''}`}>
+                  {orbState === 'listening' ? 'اضغط مرة أخرى للإرسال، أو اترك الزر إن كنت تضغط باستمرار' : 'ضغطة للبدء وضغطة للإرسال'}
                 </p>
-                <p className="text-text-secondary text-xs mt-1 text-center">
-                  {reply || (orbState === 'listening' ? 'قل لي بماذا أساعدك' : 'فعّل الميكروفون لبدء المحادثة الصوتية')}
-                </p>
-                {audioPlaybackError && (
-                  <p role="status" className="mt-2 max-w-xs text-center text-xs leading-5 text-amber-300">
-                    {audioPlaybackError}
-                  </p>
-                )}
-                {['idle', 'error', 'ready', 'listening', 'listening-active', 'transcribing', 'thinking', 'speaking', 'paused'].includes(orbState) && (
-                  <button
-                    type="button"
-                    onPointerDown={(event) => {
-                      event.preventDefault();
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                      void startAudioListening();
-                    }}
-                    onPointerUp={stopAudioListening}
-                    onPointerCancel={stopAudioListening}
-                    onLostPointerCapture={stopAudioListening}
-                    onContextMenu={(event) => event.preventDefault()}
-                    onDragStart={(event) => event.preventDefault()}
-                    onKeyDown={(event) => {
-                      if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
-                        event.preventDefault();
-                        void startAudioListening();
-                      }
-                    }}
-                    onKeyUp={(event) => {
-                      if (event.key === ' ' || event.key === 'Enter') {
-                        event.preventDefault();
-                        stopAudioListening();
-                      }
-                    }}
-                    aria-pressed={orbState === 'listening' || orbState === 'listening-active'}
-                    className="mt-4 touch-none select-none rounded-lg bg-gold px-4 py-2 text-sm font-semibold text-base-bg disabled:cursor-wait disabled:opacity-60"
-                    style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
-                  >
-                    {audioStarting ? 'جارٍ تفعيل الميكروفون...' : 'اضغط باستمرار للتحدث'}
-                  </button>
-                )}
               </div>
+
+              <SendActionBanner />
+
+              {attachment && (
+                <div className="mx-4 mb-2 flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/5 px-3 py-2 text-xs">
+                  <span className="text-gold">📎</span>
+                  <span className="min-w-0 flex-1 truncate text-text-primary" dir="auto">{attachment.name}</span>
+                  <span className="text-text-secondary">اسأل عنه بالكتابة أو الصوت</span>
+                  <button type="button" aria-label="إزالة المرفق" onClick={() => setAttachment(null)} className="px-1 text-text-secondary hover:text-text-primary">×</button>
+                </div>
+              )}
+              {attachMenuOpen && (
+                <div className="mx-4 mb-2 grid grid-cols-4 gap-1.5">
+                  {[['camera', 'تصوير'], ['gallery', 'صورة'], ['files', 'ملف']].map(([kind, label]) => (
+                    <button key={kind} type="button" onClick={() => { setAttachMenuOpen(false); intakeRef.current?.open(kind); }}
+                      className="min-h-9 rounded-md border border-base-border bg-base-card text-xs text-text-primary">{label}</button>
+                  ))}
+                  <button type="button" onClick={() => { setAttachMenuOpen(false); setActiveSection('files'); setMenuOpen(true); }}
+                    className="min-h-9 rounded-md border border-base-border bg-base-card text-xs text-text-primary">من ملفاتي</button>
+                </div>
+              )}
+              <FileIntake ref={intakeRef} onSaved={(record) => setAttachment(record)} onError={setAudioPlaybackError} />
 
               {/* شريط الإدخال */}
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
+                  primeSpeech(); // inside the submit gesture, so iOS lets the reply speak
                   sendMessage(message);
                   setMessage('');
                 }}
                 className="flex items-center gap-2 px-4 py-3 border-t border-base-border"
               >
+                <button
+                  type="button"
+                  aria-label="إرفاق ملف أو صورة"
+                  aria-expanded={attachMenuOpen}
+                  onClick={() => setAttachMenuOpen((open) => !open)}
+                  className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full border border-base-border text-text-secondary hover:text-text-primary"
+                >
+                  📎
+                </button>
                 <input
                   type="text"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  placeholder="اسأل المساعد أي شيء"
+                  placeholder={attachment ? 'اسأل عن الملف المرفق' : 'اسأل المساعد أي شيء'}
                   className="flex-1 bg-base-card border border-base-border text-text-primary rounded-lg h-10 px-3 text-sm text-right"
                 />
                 <button
@@ -1150,30 +1390,18 @@ export default function Home() {
                     </div>
 
                     <div className="space-y-2">
-                      <ul className="space-y-2">
-                        <li className="flex min-h-16 items-center gap-3 rounded-lg border border-base-border bg-base-card px-3 py-3">
-                          <span className="flex w-7 justify-center" aria-hidden="true">
-                            <span className="h-3 w-3 rounded-full border border-gold/45 bg-gold/20 shadow-[inset_0_0_5px_rgba(201,168,104,0.18)]" />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <span className="block text-sm text-text-primary">WhatsApp</span>
-                            {whatsappMetaConnection ? (
-                              <span className="mt-1 block text-xs text-text-secondary">
-                                مرتبط{whatsappMetaConnection.displayPhoneNumber ? ` · ${whatsappMetaConnection.displayPhoneNumber}` : ''}
-                              </span>
-                            ) : (
-                              <span className="mt-1 block text-xs text-text-secondary">{whatsappBusy ? 'جارٍ الربط...' : 'غير مرتبط'}</span>
-                            )}
-                          </div>
-                        </li>
-                      </ul>
-                      <p className="text-xs leading-5 text-text-secondary">
-                        تُعالج الرسائل النصية الواردة عبر Meta ومزوّد المساعد Groq، وقد تُحوّل إلى OpenRouter عند تعذّر Groq، دون حفظ سجل محادثات في قاعدة بيانات Smart.z؛ تنطبق سياسات معالجة البيانات الخاصة بكل مزوّد.
-                      </p>
                       <WhatsAppClusterConnection
-                        authSession={authSession}
-                        customerAccess={customerAccess}
+                        eligible={customerAccess.status === 'active' && Boolean(authSession?.access_token)}
+                        getAccessToken={getAccessToken}
+                        metaConnection={whatsappMetaConnection}
+                        metaBusy={whatsappBusy || whatsappConnectionLoading}
+                        metaError={whatsappError}
+                        onStartMeta={startOfficialWhatsAppSignup}
                       />
+                      <p className="text-xs leading-5 text-text-secondary">
+                        نص الرسائل الواردة والرسائل الصوتية يُرسل إلى Groq (أو OpenRouter عند تعذره) لتوليد الرد، ولا تحفظ Smart.z سجل المحادثات.
+                      </p>
+                      <SendSettings />
                       <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">
                         <h3 className="text-sm font-medium text-text-primary">فتح تطبيق على الهاتف</h3>
                         <div className="grid grid-cols-2 gap-2">
@@ -1276,14 +1504,20 @@ export default function Home() {
                   <div className="space-y-5">
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">التعلم والتخصيص</h2>
+                    </div>
+
+                    <LearningPanel getAccessToken={getAccessToken} refreshKey={learningVersion} />
+
+                    <div className="border-t border-base-border pt-4">
+                      <h3 className="text-sm font-medium text-text-primary">ملاحظاتك للمساعد</h3>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        حاليًا يمكنك إضافة ذكريات يدويًا وحفظها محليًا؛ لا يتعلم النموذج منها تلقائيًا ولا تُرسل إلى Groq.
+                        أشياء تريد أن يعرفها دائماً. تُرسل معه فقط إذا كان التعلّم الشخصي مفعّلاً.
                       </p>
                     </div>
 
                     <form onSubmit={saveMemory} className="space-y-3 rounded-lg border border-base-border bg-base-card p-3">
                       <label className="block space-y-2">
-                        <span className="text-sm text-text-primary">إضافة ذاكرة</span>
+                        <span className="text-sm text-text-primary">إضافة ملاحظة</span>
                         <textarea
                           value={memoryDraft}
                           onChange={(event) => setMemoryDraft(event.target.value)}
@@ -1306,7 +1540,7 @@ export default function Home() {
                       <p className="text-sm text-text-secondary">جارٍ تحميل الذاكرة...</p>
                     ) : savedMemories.length === 0 ? (
                       <p className="rounded-lg border border-base-border bg-base-card px-4 py-5 text-sm text-text-secondary">
-                        لا توجد ذاكرة محفوظة حاليًا.
+                        لا توجد ملاحظات بعد.
                       </p>
                     ) : (
                       <ul className="space-y-2">
@@ -1342,14 +1576,38 @@ export default function Home() {
                       notificationStatus={taskNotificationStatus}
                       onNotificationStatusChange={setTaskNotificationStatus}
                     />
+                ) : activeSection === 'files' ? (
+                  <FilesPanel
+                    onAttach={(file) => { setAttachment(file); setMenuOpen(false); setActiveSection(null); }}
+                    onStudy={(file) => { setStudyFileId(file.id); setActiveSection('study'); }}
+                  />
+                ) : activeSection === 'documents' ? (
+                  <DocumentsPanel
+                    getAccessToken={getAccessToken}
+                    initialTemplateId={documentTemplateRequest}
+                    onConsumedInitial={() => setDocumentTemplateRequest(null)}
+                  />
+                ) : activeSection === 'study' ? (
+                  <StudyPanel getAccessToken={getAccessToken} initialFileId={studyFileId} />
                 ) : activeSection === 'audio' ? (
                   <div className="space-y-5">
                     <div>
                       <h2 className="text-base font-semibold text-text-primary">صوت المساعد</h2>
                       <p className="mt-1 text-xs leading-5 text-text-secondary">
-                        يُجرّب Smart.z النطق عبر محرك الجهاز أو المتصفح، مع تفضيل الصوت المحلي ثم السعودي والخليجي، واستبعاد ar-JO. لا يرسل التطبيق النص إلى خدمة صوت خاصة به؛ يعتمد الاتصال على محرك النطق وإعداداته في الجهاز.
+                        الصوت السحابي هو المفضّل، وصوت الجهاز احتياطي يمكنك إيقافه.
                       </p>
+                      <button
+                        type="button"
+                        onClick={() => setSetupOpen(true)}
+                        className="mt-3 min-h-10 w-full rounded-lg border border-base-border px-3 text-sm text-text-primary hover:bg-base-card"
+                      >
+                        إعادة فحص الأذونات والصوت
+                      </button>
                     </div>
+
+                    <VoiceSettings />
+
+                    <h3 className="text-sm font-medium text-text-primary">صوت الجهاز (الاحتياطي)</h3>
 
                     <>
                       {!audioSupported && (
@@ -1381,17 +1639,13 @@ export default function Home() {
                           disabled={audioPreviewing}
                           onClick={async () => {
                             const audioFlow = audioFlowRef.current;
-                            if (audioFlow?.isProcessing) {
+                            if (audioFlow?.isRecording || audioFlow?.isBusy) {
                               setAudioSettingsMessage('انتظر انتهاء رد المساعد قبل تجربة العينة.');
                               return;
                             }
-
-                            const resumeListening = Boolean(
-                              audioFlow?.isVADRunning && audioFlow.vad?.isRunning
-                            );
+                            primeSpeech(); // inside the tap, for iOS
                             setAudioPreviewing(true);
                             setAudioSettingsMessage('');
-                            if (resumeListening) audioFlow.vad.pause();
                             try {
                               const result = await testSpeechPlayback('مرحبًا، هذا اختبار للصوت العربي.');
                               const engineName = result.engine === 'android-native'
@@ -1408,9 +1662,6 @@ export default function Home() {
                               console.error('[TTS] Voice preview failed:', error);
                               setAudioSettingsMessage(`فشل اختبار النطق: ${error?.message || String(error)}`);
                             } finally {
-                              if (resumeListening && audioFlow.vad?.isRunning) {
-                                audioFlow.vad.resume();
-                              }
                               setAudioPreviewing(false);
                             }
                           }}
@@ -1513,6 +1764,16 @@ export default function Home() {
                         </section>
                     </>
                   </div>
+                ) : activeSection === 'driving' ? (
+                  <DrivingSettings
+                    active={driving.active}
+                    onStart={() => {
+                      primeSpeech(); // inside the tap: lets the reply play later
+                      setMenuOpen(false);
+                      void drivingRef.current?.start();
+                    }}
+                    onStop={() => { void drivingRef.current?.stop('user'); }}
+                  />
                 ) : activeSection === 'privacy' ? (
                   <div className="space-y-7">
                     <div>

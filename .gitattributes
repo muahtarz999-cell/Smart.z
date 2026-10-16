@@ -1,0 +1,6 @@
+# Keep LF in the repository; Windows checkouts still get CRLF in the working tree.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.jar binary

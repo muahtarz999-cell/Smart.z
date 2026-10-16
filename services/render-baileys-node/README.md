@@ -1,20 +1,43 @@
-# خادم عنقود Baileys الموزع لـ Smart.z (Render Node)
+# خادم WhatsApp الشخصي لـ Smart.z (Render)
 
-هذا المجلد يحتوي على الكود الموحد الجاهز للنشر على خوادم **Render** الخمسة.
+خادم واحد = جلسة WhatsApp واحدة = عميل واحد. التطبيق يحدد من يملك الخادم؛ هذا الخادم يحفظ الجلسة، ويُصدر رمز QR أو رمز الاقتران عند الطلب، ويمرر الرسائل النصية الواردة إلى التطبيق، ويمسح الجلسة كاملة عند `/api/reset`.
 
-## 🛠️ متغيرات البيئة المطلوبة على كل حساب Render:
+## متغيرات البيئة لكل خادم
 
-| المتغير | القيمة النموذجية | الوصف |
+| المتغير | مثال | ملاحظة |
 | :--- | :--- | :--- |
-| `PORT` | `3000` | منفذ السيرفر الداخلي |
-| `SMART_Z_APP_URL` | `https://smart-z.pages.dev` | رابط تطبيق Smart.z الرئيسي على Cloudflare |
-| `CLUSTER_NODE_ID` | `1` (أو `2`, `3`, `4`, `5`) | رقم النود الخاص بهذا الحساب |
-| `CLUSTER_NODE_KEY` | `rnd_dummy_key_1` | مفتاح الأمان المتطابق مع `RENDER_SERVER_X_KEY` في Smart.z |
+| `CLUSTER_NODE_ID` | `1` … `5` | رقم الخادم، مطابق لرقم `RENDER_SERVER_X` في التطبيق |
+| `CLUSTER_NODE_KEY` | 32 حرفاً عشوائياً على الأقل 24 | نفس قيمة `RENDER_SERVER_X_KEY` في التطبيق. الخادم يرفض التشغيل بدونه |
+| `SMART_Z_APP_URL` | `https://smart-z.pages.dev` | رابط التطبيق |
+| `SUPABASE_URL` | `https://xxxx.supabase.co` | لحفظ الجلسة في قاعدة البيانات بدل القرص المؤقت |
+| `SUPABASE_SERVICE_ROLE_KEY` | — | سري. بدونه تُحفظ الجلسة على القرص وتضيع مع كل إعادة تشغيل |
+| `LOG_LEVEL` | `warn` | اختياري |
 
-## 🚀 طريقة النشر على Render:
-1. أنشئ **Web Service** جديدة في حساب Render.
-2. حدد **Environment:** `Node`.
-3. **Build Command:** `npm install`
-4. **Start Command:** `npm start`
-5. اضف **Persistent Disk** (اختياري/موصى به) مثبت على المسار `/opt/render/project/src/auth_info_baileys` لحفظ الجلسة عند إعادة التشغيل.
+## النشر
 
+1. Web Service، البيئة Node 20 أو أحدث.
+2. Build: `npm install` · Start: `npm start`.
+3. Health Check Path: `/healthz` (المسار الوحيد بلا مفتاح).
+4. لا حاجة لقرص دائم إذا ضُبط `SUPABASE_URL` و`SUPABASE_SERVICE_ROLE_KEY`.
+
+## المسارات (كلها تتطلب `Authorization: Bearer <CLUSTER_NODE_KEY>`)
+
+| المسار | الوظيفة |
+| :--- | :--- |
+| `GET /api/status` | الحالة: `IDLE` · `STARTING` · `WAITING_QR` · `CONNECTING` · `CONNECTED` · `ERROR` |
+| `GET /api/connect?method=qr` | يعيد آخر رمز QR، أو `202 pending` أثناء التجهيز |
+| `GET /api/connect?method=pairing_code&phoneNumber=9665…` | يعيد رمز اقتران من 8 خانات |
+| `POST /api/reset` | تسجيل خروج ومسح الجلسة بالكامل |
+| `POST /api/send` | إرسال رسالة `{ remoteJid, text }` أو ملف `{ remoteJid, document: { data (base64), fileName, mimetype }, text? }` |
+| `GET /api/contacts/search?q=أحمد&groups=0` | البحث عن جهة اتصال أو مجموعة بالاسم أو الرقم |
+
+## الرسائل الصوتية
+
+- الرسالة الصوتية الواردة تُنزّل وتُرسل للتطبيق ليحوّلها إلى نص ويرد.
+- إن طلب العميل رداً صوتياً يعيد التطبيق مقاطع صوت، فيدمجها الخادم ويحوّلها إلى رسالة صوتية WhatsApp (OGG Opus) عبر `ffmpeg-static` (يُثبَّت تلقائياً مع `npm install`، لا إعداد إضافي).
+- حد أقصى 8 ردود تلقائية في الدقيقة، مع مؤشر «يكتب…» أو «يسجل…» وتأخير بشري قصير، لإبعاد الرقم عن حدود WhatsApp للأتمتة.
+- أسماء جهات الاتصال والمجموعات تُحفظ مع الجلسة نفسها وتُمسح معها عند فك الربط.
+
+## إدخال رمز الاقتران على الهاتف
+
+WhatsApp ← الإعدادات ← الأجهزة المرتبطة ← ربط جهاز ← «الربط برقم الهاتف بدلاً من ذلك» ← اكتب الرمز. لا يوجد رابط يفتح هذه الشاشة مباشرة.

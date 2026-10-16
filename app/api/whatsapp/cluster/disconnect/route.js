@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server';
+import { json } from '../../../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
-import { releaseStickyNode } from '../../../../../lib/whatsapp-cluster';
+import { ClusterError, CLUSTER_MESSAGES, releaseNode } from '../../../../../lib/whatsapp-cluster';
 
 export const runtime = 'edge';
 
@@ -9,17 +9,12 @@ export async function POST(request) {
   if (!access.ok) return customerAccessResponse(access);
 
   try {
-    const released = await releaseStickyNode(access.user.id, access.client);
-    return NextResponse.json(
-      { success: released, message: 'تم فك حجز خادم الواتساب لحسابك بنجاح.' },
-      { headers: { 'Cache-Control': 'no-store' } }
-    );
-  } catch (err) {
-    console.error('[WhatsApp Cluster Router] Failed to release node:', err);
-    return NextResponse.json(
-      { success: false, error: 'تعذر إلغاء تعيين خادم الواتساب.' },
-      { status: 500, headers: { 'Cache-Control': 'no-store' } }
-    );
+    const result = await releaseNode(access.client);
+    return json({ success: true, ...result });
+  } catch (error) {
+    const code = error instanceof ClusterError ? error.code : 'RELEASE_FAILED';
+    console.error('[WhatsApp personal] release failed', { code });
+    // NODE_RESET_FAILED: the row is already gone; a stale session is wiped again on the next claim.
+    return json({ success: false, code, error: CLUSTER_MESSAGES[code] || CLUSTER_MESSAGES.RELEASE_FAILED }, 502);
   }
 }
-

@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server';
+import { json } from '../../../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
-import { getUserAssignedNode, proxyToNode } from '../../../../../lib/whatsapp-cluster';
+import { callNode, ClusterError, CLUSTER_MESSAGES, getClusterNode, getUserAssignment } from '../../../../../lib/whatsapp-cluster';
 
 export const runtime = 'edge';
 
@@ -8,60 +8,40 @@ export async function GET(request) {
   const access = await requireCustomerRegistered(request);
   if (!access.ok) return customerAccessResponse(access);
 
-  // 1. Check if user has an assigned node
-  let assignedNode;
+  let assignment;
   try {
-    assignedNode = await getUserAssignedNode(access.user.id, access.client);
-  } catch (err) {
-    console.error('[WhatsApp Cluster Router] Status lookup failed:', err);
-    return NextResponse.json(
-      { status: 'ERROR', error: 'تعذر التحقق من حالة خادم الواتساب.' },
-      { status: 500, headers: { 'Cache-Control': 'no-store' } }
-    );
+    assignment = await getUserAssignment(access.user.id, access.client);
+  } catch (error) {
+    const code = error instanceof ClusterError ? error.code : 'ASSIGNMENT_LOOKUP_FAILED';
+    return json({ status: 'ERROR', error: CLUSTER_MESSAGES[code] }, 503);
+  }
+  if (!assignment) {
+    return json({ status: 'DISCONNECTED', connected: false, assigned: false, autoReply: false });
   }
 
-  if (!assignedNode) {
-    return NextResponse.json(
-      {
-        status: 'DISCONNECTED',
-        connected: false,
-        assigned: false,
-        message: 'لا يوجد خادم واتساب مخصص لحسابك بعد.',
-      },
-      { headers: { 'Cache-Control': 'no-store' } }
-    );
-  }
+  const base = {
+    assigned: true,
+    nodeId: assignment.node_id,
+    autoReply: assignment.auto_reply_enabled === true,
+    replyScope: assignment.reply_scope || 'all',
+    allowedNumbers: assignment.allowed_numbers || [],
+    voiceReplyMode: assignment.voice_reply_mode || 'match',
+  };
+  const node = getClusterNode(assignment.node_id);
+  if (!node) return json({ ...base, status: 'ERROR', connected: false, error: CLUSTER_MESSAGES.ASSIGNED_NODE_NOT_CONFIGURED }, 503);
 
-  // 2. Query node live status
   try {
-    const proxyResult = await proxyToNode(assignedNode, '/api/status');
-    const nodeData = typeof proxyResult.data === 'object' && proxyResult.data !== null
-      ? proxyResult.data
-      : { status: 'UNKNOWN' };
-
-    return NextResponse.json(
-      {
-        ...nodeData,
-        nodeId: assignedNode.id,
-        assigned: true,
-        connected: nodeData.status === 'CONNECTED',
-      },
-      {
-        status: proxyResult.status,
-        headers: { 'Cache-Control': 'no-store' },
-      }
-    );
-  } catch (proxyError) {
-    return NextResponse.json(
-      {
-        status: 'UNREACHABLE',
-        connected: false,
-        nodeId: assignedNode.id,
-        assigned: true,
-        error: `الخادم المخصص رقم ${assignedNode.id} لا يستجيب حالياً.`,
-      },
-      { status: 502, headers: { 'Cache-Control': 'no-store' } }
-    );
+    const result = await callNode(node, '/api/status', { timeoutMs: 8_000 });
+    const data = result.data || {};
+    const connected = data.status === 'CONNECTED';
+    const dbStatus = connected ? 'connected' : 'pending';
+    if (assignment.status !== dbStatus || (connected && data.phone && data.phone !== assignment.phone_number)) {
+      await access.client.from('whatsapp_tenant_nodes')
+        .update({ status: dbStatus, phone_number: data.phone || assignment.phone_number, last_status_check: new Date().toISOString() })
+        .eq('user_id', access.user.id);
+    }
+    return json({ ...base, status: data.status || 'UNKNOWN', connected, phone: data.phone || null, hasQr: Boolean(data.hasQr) });
+  } catch {
+    return json({ ...base, status: 'WAKING', connected: false });
   }
 }
-
