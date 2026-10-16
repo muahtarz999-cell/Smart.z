@@ -10,6 +10,8 @@ import android.util.Base64;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -26,6 +28,7 @@ final class ReplyPlayer {
     private final AudioAttributes attributes;
     private TextToSpeech tts;
     private volatile boolean ttsReady = false;
+    private final List<String> triedEngines = new ArrayList<>();
     private volatile boolean interrupted = false;
     private volatile MediaPlayer current;
     private volatile CountDownLatch waiting;
@@ -37,13 +40,64 @@ final class ReplyPlayer {
             .setUsage(usage)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build();
-        this.tts = new TextToSpeech(this.context, status -> {
-            if (status != TextToSpeech.SUCCESS || tts == null) return;
-            int result = tts.setLanguage(new Locale("ar", "SA"));
-            if (result < 0) tts.setLanguage(new Locale("ar"));
-            tts.setAudioAttributes(attributes);
+        bindEngine(null);
+    }
+
+    /**
+     * Binds the phone's speech engine: the default one first, then any other
+     * installed engine, until one actually speaks Arabic. Some phones ship a
+     * default engine without Arabic or one that stops answering after an
+     * update; staying on it is what made driving mode go silent.
+     */
+    private synchronized void bindEngine(String enginePackage) {
+        ttsReady = false;
+        TextToSpeech previous = tts;
+        tts = null;
+        if (previous != null) {
+            try { previous.shutdown(); } catch (RuntimeException ignored) { }
+        }
+        triedEngines.add(enginePackage == null ? "" : enginePackage);
+        final TextToSpeech[] holder = new TextToSpeech[1];
+        TextToSpeech.OnInitListener listener = status -> {
+            TextToSpeech engine = holder[0];
+            if (engine == null) return;
+            if (status != TextToSpeech.SUCCESS) {
+                tryNextEngine(engine);
+                return;
+            }
+            int result = engine.setLanguage(new Locale("ar", "SA"));
+            if (result < 0) result = engine.setLanguage(new Locale("ar"));
+            if (result < 0) {
+                tryNextEngine(engine);
+                return;
+            }
+            engine.setAudioAttributes(attributes);
             ttsReady = true;
-        });
+        };
+        holder[0] = enginePackage == null
+            ? new TextToSpeech(context, listener)
+            : new TextToSpeech(context, listener, enginePackage);
+        tts = holder[0];
+    }
+
+    /** The current engine cannot speak Arabic: move to the next installed engine, if any. */
+    private void tryNextEngine(TextToSpeech failed) {
+        String next = null;
+        try {
+            for (TextToSpeech.EngineInfo info : failed.getEngines()) {
+                if (!triedEngines.contains(info.name)) {
+                    next = info.name;
+                    break;
+                }
+            }
+        } catch (RuntimeException ignored) { }
+        if (next != null) bindEngine(next);
+    }
+
+    /** Starts over from the default engine (after a refusal or silence). */
+    private void rebind() {
+        triedEngines.clear();
+        bindEngine(null);
     }
 
     AudioAttributes attributes() {
@@ -130,37 +184,54 @@ final class ReplyPlayer {
     /** The phone's voice (the "heavy" one) — only used when the cloud voice failed. */
     boolean speakWithDevice(String text) {
         interrupted = false;
-        if (text == null || text.trim().isEmpty() || tts == null) return false;
-        for (int i = 0; i < 20 && !ttsReady; i++) {
+        if (text == null || text.trim().isEmpty()) return false;
+        for (int attempt = 0; attempt < 2 && !interrupted; attempt++) {
+            int result = speakOnce(text);
+            if (result == 1) return !interrupted;
+            if (result == 0 || interrupted) return false;
+            rebind(); // refused or silent: bind again (maybe another engine) and try once more
+        }
+        return false;
+    }
+
+    /** 1 = spoken, 0 = gave up (no engine / interrupted), -1 = refused or never started. */
+    private int speakOnce(String text) {
+        for (int i = 0; i < 50 && !ttsReady && !interrupted; i++) {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
-                return false;
+                return 0;
             }
         }
-        if (!ttsReady) return false;
+        TextToSpeech engine = tts;
+        if (!ttsReady || engine == null) return -1;
+        CountDownLatch started = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(1);
         String id = "drive-" + System.nanoTime();
-        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override public void onStart(String utteranceId) { }
-            @Override public void onDone(String utteranceId) { done.countDown(); }
+        engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override public void onStart(String utteranceId) { started.countDown(); }
+            @Override public void onDone(String utteranceId) { started.countDown(); done.countDown(); }
             @Override public void onError(String utteranceId) { done.countDown(); }
-            @Override public void onStop(String utteranceId, boolean interrupted) { done.countDown(); }
+            @Override public void onStop(String utteranceId, boolean interrupted) { started.countDown(); done.countDown(); }
         });
         waiting = done;
-        if (tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) != TextToSpeech.SUCCESS) {
-            waiting = null;
-            return false;
-        }
         try {
+            if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) != TextToSpeech.SUCCESS) return -1;
+            if (!started.await(8, TimeUnit.SECONDS)) {
+                engine.stop();
+                return -1; // the engine accepted but never spoke
+            }
             done.await(90, TimeUnit.SECONDS);
+            return 1;
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
+            return 0;
+        } catch (RuntimeException error) {
+            return -1;
         } finally {
             waiting = null;
         }
-        return !interrupted;
     }
 
     /** Stops whatever is speaking now (a tap, the bubble, the steering-wheel button). */
