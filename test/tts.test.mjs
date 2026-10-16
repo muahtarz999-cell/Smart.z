@@ -171,6 +171,7 @@ test('uses native Android TTS voices and reports native engine failures', async 
       maxActiveUtterances = Math.max(maxActiveUtterances, activeUtterances);
       assert.equal(options.lang, 'ar-SA');
       assert.equal(options.voice, 2);
+      assert.equal(options.voiceName, 'ar-SA'); // SmartSpeech picks the voice by name
       await delay(5);
       activeUtterances -= 1;
     },
@@ -186,7 +187,7 @@ test('uses native Android TTS voices and reports native engine failures', async 
   const nativeSource = source
     .replace(
       "import { Capacitor, registerPlugin } from '@capacitor/core';",
-      "const Capacitor = { isNativePlatform: () => true, isPluginAvailable: () => true, getPlatform: () => 'android' }; const registerPlugin = () => globalThis.__speechEngineSetupMock;"
+      "const Capacitor = { isNativePlatform: () => true, isPluginAvailable: () => true, getPlatform: () => 'android' }; const registerPlugin = (name) => (name === 'SmartSpeech' ? globalThis.__nativeSpeechMock : globalThis.__speechEngineSetupMock);"
     )
     .replace(
       "await import('@capacitor-community/text-to-speech')",
@@ -251,4 +252,27 @@ test('uses native Android TTS voices and reports native engine failures', async 
   await assert.rejects(nativeTts.openSpeechEngineSettings(), /install-settings-failed/);
   delete globalThis.__nativeSpeechMock;
   delete globalThis.__speechEngineSetupMock;
+});
+
+test('an older APK without SmartSpeech still speaks through the community plugin', async () => {
+  let spokeWith = null;
+  globalThis.__legacySpeechMock = {
+    async getSupportedVoices() { return { voices: [createVoice('ar-SA', { localService: true })] }; },
+    async speak() { spokeWith = 'legacy'; },
+    async stop() {},
+  };
+  const legacySource = source
+    .replace(
+      "import { Capacitor, registerPlugin } from '@capacitor/core';",
+      "const Capacitor = { isNativePlatform: () => true, isPluginAvailable: (name) => name === 'TextToSpeech', getPlatform: () => 'android' }; const registerPlugin = (name) => { throw new Error('unexpected plugin ' + name); };"
+    )
+    .replace(
+      "await import('@capacitor-community/text-to-speech')",
+      'await Promise.resolve({ TextToSpeech: globalThis.__legacySpeechMock })'
+    );
+  const legacyTts = await import(`data:text/javascript;base64,${Buffer.from(legacySource).toString('base64')}`);
+  setupSpeechSynthesis([]);
+  assert.equal(await legacyTts.speak('مرحبا'), true);
+  assert.equal(spokeWith, 'legacy');
+  assert.equal(await legacyTts.describeNativeSpeechProblem(), null);
 });

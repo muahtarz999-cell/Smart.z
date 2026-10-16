@@ -26,6 +26,9 @@ final class DriveClient {
         }
     }
 
+    /** This install's device id (lib/device-lock.js); sent with every call so the account's one-device lock passes. */
+    static volatile String deviceId = "";
+
     private DriveClient() { }
 
     /** POST /api/drive/turn — multipart: audio (WAV) + context (JSON). */
@@ -98,6 +101,7 @@ final class DriveClient {
         connection.setReadTimeout(readTimeoutMs);
         connection.setRequestProperty("Authorization", "Bearer " + token);
         connection.setRequestProperty("Accept", "application/json");
+        if (deviceId != null && !deviceId.isEmpty()) connection.setRequestProperty("X-Smartz-Device", deviceId);
         return connection;
     }
 
