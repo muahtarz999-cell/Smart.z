@@ -3,6 +3,49 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const source = await readFile(new URL('../lib/audio-flow.js', import.meta.url), 'utf8');
+const testableSource = source
+  .replace(
+    "import { VoiceActivityDetector } from './vad';",
+    `let vadStart = async () => true;
+     let vadStopCalls = 0;
+     class VoiceActivityDetector {
+       constructor() { this.isSpeaking = false; }
+       async start() {
+         const started = await vadStart();
+         this.isRunning = started;
+         return started;
+       }
+       stop() { this.isRunning = false; vadStopCalls += 1; }
+       setInterruptMode() {}
+     }`
+  )
+  .replace(
+    "import { speak, stopSpeaking } from './tts';",
+    'const speak = async () => true; const stopSpeaking = () => {};'
+  )
+  .replace(
+    "import { addMessage, getRecentMessages } from './conversation';",
+    'const addMessage = async () => {}; const getRecentMessages = async () => [];'
+  )
+  .replace(
+    "import { resolveVoiceTrigger } from './voice-trigger';",
+    'const resolveVoiceTrigger = (text) => ({ triggered: false, text });'
+  );
+const audioFlowModule = await import(
+  `data:text/javascript;base64,${Buffer.from(
+    `${testableSource}\nexport const testControls = { setVADStart: (start) => { vadStart = start; }, get vadStopCalls() { return vadStopCalls; } };`
+  ).toString('base64')}`
+);
+
+function createManager() {
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      mediaDevices: {
+        getUserMedia: async () => ({
+          getTracks: () => [{ stop() {} }],
+        }),
+      },
 const testable = source
   .replace("import { VoiceRecorder } from './voice-recorder';", 'class VoiceRecorder {}')
   .replace("import { primeSpeech, speak, stopSpeaking } from './speech';",
