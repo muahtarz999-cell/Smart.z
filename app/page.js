@@ -53,6 +53,8 @@ import { DrivingController } from '../lib/driving-mode';
 import { DRIVING_MESSAGES, isDrivingStartCommand, isDrivingStopCommand } from '../lib/driving-commands';
 import { addMessage, getRecentMessages } from '../lib/conversation';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
+import { inboxContextFor, runHousekeeping, syncInbox } from '../lib/whatsapp-inbox-store';
+import InboxSettings from '../components/InboxSettings';
 import {
   getTaskReminderStatus,
   synchronizeTaskReminders,
@@ -382,6 +384,23 @@ export default function Home() {
     }
   }, [customerDataReady]);
 
+  // WhatsApp messages wait on the node (memory only) until this phone collects
+  // them; housekeeping drops expired ones and old cache. Every 10 minutes
+  // while the app is open, and whenever it comes back to the foreground.
+  useEffect(() => {
+    if (!customerDataReady || customerAccess.status !== 'active') return undefined;
+    const collect = () => syncInbox(getAccessToken).catch(() => {});
+    runHousekeeping().catch(() => {});
+    collect();
+    const timer = window.setInterval(collect, 10 * 60 * 1000);
+    const onVisible = () => { if (document.visibilityState === 'visible') collect(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [customerDataReady, customerAccess.status]);
+
   useEffect(() => {
     if (!customerDataReady || !profileLoaded) return;
     if (skipProfileSaveRef.current) {
@@ -624,6 +643,7 @@ export default function Home() {
       onAction: queueSend,
       interceptTranscript: (text) => interceptLocally(text),
       prepareAttachment,
+      getInboxContext: (message) => inboxContextFor(message, getAccessToken),
       onTurnComplete: () => {
         // Runs in the background; learning must never slow down or break a conversation.
         learnFromRecentConversation({ getAccessToken })
@@ -1455,8 +1475,9 @@ export default function Home() {
                         onStartMeta={startOfficialWhatsAppSignup}
                       />
                       <p className="text-xs leading-5 text-text-secondary">
-                        نص الرسائل الواردة والرسائل الصوتية يُرسل إلى Groq (أو OpenRouter عند تعذره) لتوليد الرد، ولا تحفظ Smart.z سجل المحادثات.
+                        نص الرسائل الواردة والرسائل الصوتية يُرسل إلى Groq (أو OpenRouter عند تعذره) لتوليد الرد. لا يحفظ خادم Smart.z سجل المحادثات؛ نسخة الرسائل الواردة تبقى على هاتفك فقط.
                       </p>
+                      <InboxSettings getAccessToken={getAccessToken} />
                       <SendSettings />
                       <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">
                         <h3 className="text-sm font-medium text-text-primary">فتح تطبيق على الهاتف</h3>

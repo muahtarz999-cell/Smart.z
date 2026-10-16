@@ -39,6 +39,7 @@ export async function POST(request) {
       profile: body.profile,
       memories: body.memories,
       documentContext: body.documentContext, // passages from a local file, chosen on the device
+      inboxContext: body.inboxContext, // WhatsApp messages stored on the phone, only when asked about them
       tools: node ? [WHATSAPP_SEND_TOOL] : [],
       whatsappLinked: Boolean(node),
     });

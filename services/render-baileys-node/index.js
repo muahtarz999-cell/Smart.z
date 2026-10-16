@@ -24,6 +24,7 @@ import pino from 'pino';
 import QRCode from 'qrcode';
 import { clearSupabaseAuthState, useSupabaseAuthState } from './supabase-auth-state.js';
 import { ContactBook } from './contacts.js';
+import { describeMessage, Inbox, MAX_INBOX_AGE_MS } from './inbox.js';
 import { toVoiceNote } from './voice-note.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -56,6 +57,7 @@ const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
   : null;
 
 const contacts = new ContactBook({ supabase, nodeId: NODE_ID, dir: process.cwd() });
+const inbox = new Inbox(); // memory only: waits for the phone to collect, then dropped
 
 // ---------------------------------------------------------------- state
 const node = {
@@ -86,6 +88,7 @@ async function clearSession() {
   if (supabase) await clearSupabaseAuthState(supabase, NODE_ID);
   await fs.rm(AUTH_DIR, { recursive: true, force: true });
   await contacts.clear();
+  inbox.clear();
   node.registered = false;
   node.phone = null;
   node.qr = null;
@@ -208,7 +211,9 @@ async function startSocket() {
     sock.ev.on('groups.upsert', (list) => contacts.addGroups(list));
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (generation !== node.generation || type !== 'notify') return;
+      if (generation !== node.generation) return;
+      for (const message of messages) recordInbox(message);
+      if (type !== 'notify') return;
       for (const message of messages) {
         await handleIncoming(message).catch((error) => logger.error({ error }, 'incoming message failed'));
       }
@@ -265,6 +270,34 @@ function senderNumberOf(message) {
   const candidates = [key.senderPn, key.remoteJidAlt, key.participantPn, key.remoteJid];
   const phoneJid = candidates.find((jid) => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net'));
   return (phoneJid || '').split('@')[0].split(':')[0] || null;
+}
+
+/** Keeps a copy for the phone's local report (memory only, see inbox.js). */
+function recordInbox(message) {
+  try {
+    const jid = message.key?.remoteJid;
+    if (message.key?.fromMe || !jid || !message.key.id) return;
+    if (jid === 'status@broadcast' || jid.endsWith('@newsletter') || jid.endsWith('@broadcast')) return;
+    const sentAt = Number(message.messageTimestamp || 0) * 1000 || Date.now();
+    if (Date.now() - sentAt > MAX_INBOX_AGE_MS) return; // old history synced at link time
+    const text = describeMessage(message);
+    if (!text) return;
+    const isGroup = jid.endsWith('@g.us');
+    const senderJid = isGroup ? message.key.participant : jid;
+    const person = senderJid ? contacts.people.get(senderJid) : null;
+    inbox.add({
+      id: message.key.id,
+      chatJid: jid,
+      chatName: isGroup ? (contacts.groups.get(jid)?.name || 'مجموعة') : '',
+      senderName: person?.name || message.pushName || person?.notify || '',
+      senderNumber: isGroup ? (String(senderJid || '').split('@')[0].split(':')[0] || null) : senderNumberOf(message),
+      isGroup,
+      text,
+      sentAt,
+    });
+  } catch (error) {
+    logger.error({ error }, 'inbox record failed');
+  }
 }
 
 async function handleIncoming(message) {
@@ -410,6 +443,14 @@ app.get('/api/connect', async (req, res) => {
       ...publicStatus(),
     });
   }
+});
+
+// The phone collects waiting messages, stores them locally, then confirms.
+app.get('/api/inbox', (_req, res) => res.json({ success: true, items: inbox.list() }));
+
+app.post('/api/inbox/ack', (req, res) => {
+  const removed = inbox.ack(req.body?.ids);
+  res.json({ success: true, removed });
 });
 
 // Wipe the session completely. Called by the app when a customer unlinks and
