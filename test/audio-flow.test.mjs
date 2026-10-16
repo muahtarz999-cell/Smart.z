@@ -26,6 +26,10 @@ const testableSource = source
   .replace(
     "import { addMessage, getRecentMessages } from './conversation';",
     'const addMessage = async () => {}; const getRecentMessages = async () => [];'
+  )
+  .replace(
+    "import { resolveVoiceTrigger } from './voice-trigger';",
+    'const resolveVoiceTrigger = (text) => ({ triggered: false, text });'
   );
 const audioFlowModule = await import(
   `data:text/javascript;base64,${Buffer.from(
