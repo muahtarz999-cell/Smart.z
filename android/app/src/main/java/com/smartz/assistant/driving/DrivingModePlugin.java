@@ -109,6 +109,17 @@ public class DrivingModePlugin extends Plugin implements DriveEvents.Listener {
         call.resolve();
     }
 
+    /** Fresh context from the app while driving (e.g. the WhatsApp messages stored on the phone). */
+    @PluginMethod
+    public void updateContext(PluginCall call) {
+        try {
+            DrivingModeService.updateContext(new JSONObject(call.getData().toString()));
+        } catch (JSONException ignored) {
+            // nothing to merge
+        }
+        call.resolve();
+    }
+
     @PluginMethod
     public void status(PluginCall call) {
         JSObject result = new JSObject();

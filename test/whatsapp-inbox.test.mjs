@@ -66,3 +66,27 @@ test('the stored messages reach the assistant prompt', async () => {
   assert.match(sent.messages[0].content, /أحمد: وين وصلت؟/);
   assert.match(sent.messages[0].content, /رقم WhatsApp الخاص بالمستخدم مربوط/);
 });
+
+test('driving mode: a failed voice chunk is retried, and messages reach the assistant', async () => {
+  const { runDriveTurn, speakChunks } = await import('../lib/drive-turn.js');
+  let calls = 0;
+  const flaky = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error('429');
+    return { audio: new Uint8Array([1, 2, 3]), contentType: 'audio/wav' };
+  };
+  const audio = await speakChunks('جملة قصيرة.', {}, flaky);
+  assert.equal(audio.length, 1);
+  assert.equal(calls, 2);
+  assert.deepEqual(await speakChunks('جملة.', {}, async () => { throw new Error('x'); }), []);
+
+  let seen;
+  const result = await runDriveTurn({ audio: 'a', context: {} }, {
+    transcribe: async () => 'لخص رسائلي',
+    assistantTurn: async (text, options) => { seen = options.inboxContext; return { reply: 'لا جديد', toolCalls: [] }; },
+    inboxContext: async () => ({ count: 1, lines: ['[س] أحمد: هلا'] }),
+    synthesize: async () => ({ audio: new Uint8Array([1]), contentType: 'audio/wav' }),
+  });
+  assert.equal(result.reply, 'لا جديد');
+  assert.deepEqual(seen.lines, ['[س] أحمد: هلا']);
+});

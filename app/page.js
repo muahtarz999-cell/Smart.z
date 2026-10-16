@@ -53,7 +53,8 @@ import { DrivingController } from '../lib/driving-mode';
 import { DRIVING_MESSAGES, isDrivingStartCommand, isDrivingStopCommand } from '../lib/driving-commands';
 import { addMessage, getRecentMessages } from '../lib/conversation';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
-import { inboxContextFor, runHousekeeping, syncInbox } from '../lib/whatsapp-inbox-store';
+import { inboxContextFor, listInboxMessages, runHousekeeping, syncInbox } from '../lib/whatsapp-inbox-store';
+import { buildInboxContext } from '../lib/whatsapp-inbox';
 import InboxSettings from '../components/InboxSettings';
 import {
   getTaskReminderStatus,
@@ -389,7 +390,14 @@ export default function Home() {
   // while the app is open, and whenever it comes back to the foreground.
   useEffect(() => {
     if (!customerDataReady || customerAccess.status !== 'active') return undefined;
-    const collect = () => syncInbox(getAccessToken).catch(() => {});
+    const collect = () => syncInbox(getAccessToken)
+      .then(async (result) => {
+        // Driving mode on the Android service gets the fresh messages too.
+        if (result?.saved && drivingRef.current?.engine === 'native') {
+          await drivingRef.current.updateNativeContext({ inbox: buildInboxContext(await listInboxMessages()) });
+        }
+      })
+      .catch(() => {});
     runHousekeeping().catch(() => {});
     collect();
     const timer = window.setInterval(collect, 10 * 60 * 1000);
@@ -690,6 +698,8 @@ export default function Home() {
           voice: { provider: voice.provider, voices: voice.voices, deviceFallback: voice.deviceFallback },
           undoSeconds: actions.undoSeconds,
           confirmEverySend: actions.confirmEverySend,
+          // Same assistant as the main screen: "لخص رسائلي" works while driving too.
+          inbox: buildInboxContext(await listInboxMessages().catch(() => [])),
         };
       },
       onChange: (next) => {

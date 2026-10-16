@@ -5,15 +5,17 @@ import { customerAccessResponse, requireCustomerRegistered } from '../../../../l
 import { runDriveTurn } from '../../../../lib/drive-turn';
 import { transcribeAudio, TranscriptionError } from '../../../../lib/transcription';
 import { linkedWhatsAppNode, nodeContactSearch, planSendCommand } from '../../../../lib/whatsapp-commands';
+import { callNode } from '../../../../lib/whatsapp-cluster';
+import { buildInboxContext, isInboxQuestion, sanitizeInboxItems } from '../../../../lib/whatsapp-inbox';
 
 export const runtime = 'edge';
 
-const MAX_CONTEXT_CHARACTERS = 24_000;
+const MAX_CONTEXT_CHARACTERS = 48_000; // history, profile, notes and the stored WhatsApp messages
 
 /**
  * Driving mode (Android service): multipart form with
  *   audio    the driver's sentence (16 kHz WAV)
- *   context  JSON { history, profile, memories, preferences, voice, pendingSend, confirmEverySend }
+ *   context  JSON { history, profile, memories, preferences, voice, pendingSend, confirmEverySend, inbox }
  * Returns { kind: reply|stop|cancel_send|ignored|error, transcript, reply, action, actionDelivery, audio: [{ mime, data }] }.
  * Nothing is stored; the context comes from the phone and goes back with the answer.
  */
@@ -40,6 +42,19 @@ export async function POST(request) {
       assistantTurn: generateAssistantTurn,
       sendTool: WHATSAPP_SEND_TOOL,
       planSend: node ? (args) => planSendCommand(args, nodeContactSearch(node)) : null,
+      // "لخص رسائلي" while driving: what the phone stored, plus what still waits on the node.
+      inboxContext: async (transcript) => {
+        if (!isInboxQuestion(transcript)) return undefined;
+        const phone = context.inbox && Array.isArray(context.inbox.lines) ? context.inbox : { lines: [], count: 0 };
+        let waiting = { lines: [], count: 0 };
+        if (node) {
+          try {
+            const result = await callNode(node, '/api/inbox', { timeoutMs: 8_000 });
+            waiting = buildInboxContext(sanitizeInboxItems(result.data?.items));
+          } catch {}
+        }
+        return { count: (Number(phone.count) || 0) + waiting.count, lines: [...phone.lines, ...waiting.lines] };
+      },
       synthesize: (text, voice) => synthesizeWithFallback(text, {
         provider: typeof voice?.provider === 'string' && voice.provider !== 'auto' ? voice.provider : undefined,
         voices: voice?.voices && typeof voice.voices === 'object' ? voice.voices : {},

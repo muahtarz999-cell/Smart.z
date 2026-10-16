@@ -126,6 +126,17 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         }
     }
 
+    /** Merges context the app refreshed while driving; only the known keys are taken. */
+    public static void updateContext(JSONObject next) {
+        DrivingModeService service = instance;
+        if (service == null || next == null) return;
+        synchronized (service) {
+            for (String key : new String[] { "inbox", "profile", "memories" }) {
+                if (next.has(key)) put(service.config, key, next.opt(key));
+            }
+        }
+    }
+
     /** The app screen is in front (no bubble needed) or not (show the bubble). */
     public static void setAppVisible(boolean visible) {
         appVisible = visible;
@@ -334,6 +345,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         put(context, "history", history);
         put(context, "profile", config.opt("profile"));
         put(context, "memories", config.opt("memories"));
+        put(context, "inbox", config.opt("inbox")); // WhatsApp messages stored on the phone, for "لخص رسائلي"
         put(context, "preferences", config.opt("preferences"));
         put(context, "voice", config.opt("voice"));
         put(context, "confirmEverySend", confirmEverySend);
