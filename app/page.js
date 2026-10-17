@@ -842,6 +842,28 @@ export default function Home() {
     }
   }
 
+  // Removes the official link and its stored Meta token (see /api/whatsapp/connection DELETE).
+  async function disconnectOfficialWhatsApp() {
+    if (!whatsappMetaConnection || !window.confirm('سيتم فصل رقم الأعمال وحذف بيانات الربط من خوادم Smart.z. هل تريد المتابعة؟')) return;
+    setWhatsappBusy(true);
+    setWhatsappError('');
+    try {
+      const token = await getAccessToken();
+      const response = await fetch('/api/whatsapp/connection', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || 'تعذر فصل ربط WhatsApp.');
+      setWhatsappMetaConnection(null);
+    } catch (error) {
+      setWhatsappError(error?.message || 'تعذر فصل ربط WhatsApp.');
+    } finally {
+      setWhatsappBusy(false);
+    }
+  }
+
   async function startOfficialWhatsAppSignup() {
     if (!authUser || !authSession?.access_token) {
       setWhatsappError('سجّل الدخول إلى Smart.z قبل ربط WhatsApp.');
@@ -1490,6 +1512,7 @@ export default function Home() {
                         metaBusy={whatsappBusy || whatsappConnectionLoading}
                         metaError={whatsappError}
                         onStartMeta={startOfficialWhatsAppSignup}
+                        onDisconnectMeta={disconnectOfficialWhatsApp}
                       />
                       <p className="text-xs leading-5 text-text-secondary">
                         نص الرسائل الواردة والرسائل الصوتية يُرسل إلى Groq (أو OpenRouter عند تعذره) لتوليد الرد. لا يحفظ خادم Smart.z سجل المحادثات؛ نسخة الرسائل الواردة تبقى على هاتفك فقط.

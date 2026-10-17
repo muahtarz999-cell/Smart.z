@@ -35,6 +35,7 @@ export default function WhatsAppClusterConnection({
   metaBusy,
   metaError,
   onStartMeta,
+  onDisconnectMeta,
 }) {
   const [path, setPath] = useState('personal'); // personal | business
   const [method, setMethod] = useState('pairing'); // pairing (phone) | qr (computer)
@@ -225,6 +226,12 @@ export default function WhatsAppClusterConnection({
             className="min-h-10 w-full rounded-lg bg-gold px-3 text-sm font-semibold text-base-bg disabled:opacity-60">
             {metaBusy ? 'جارٍ الربط عبر Meta…' : metaConnection ? 'استبدال رقم الأعمال' : 'ربط حساب الأعمال عبر Meta'}
           </button>
+          {metaConnection && onDisconnectMeta ? (
+            <button type="button" disabled={metaBusy} onClick={onDisconnectMeta}
+              className="min-h-10 w-full rounded-lg border border-base-border px-3 text-sm text-text-secondary hover:text-text-primary disabled:opacity-60">
+              فصل رقم الأعمال وحذف بيانات الربط
+            </button>
+          ) : null}
           {metaError && <p role="alert" className="text-amber-300">{metaError}</p>}
         </div>
       ) : (
