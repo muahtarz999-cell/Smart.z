@@ -266,10 +266,12 @@ test('voice: a driving reply stays in one voice; a failure hands that voice to t
 test('spoken spellings of "turn on driving mode" start it', async () => {
   const { isDrivingStartCommand } = await import('../lib/driving-commands.js');
   for (const t of ['فاعل وضع القيادة', 'فعّل وضع القيادة', 'فعلي وضع القيادة', 'شغلي وضع القيادة', 'شاغل وضع القيادة',
-    'ممكن تفعل وضع القيادة', 'سمارت فعل لي وضع القيادة', 'وضع القيادة لو سمحت']) {
+    'ممكن تفعل وضع القيادة', 'سمارت فعل لي وضع القيادة', 'وضع القيادة لو سمحت',
+    'شغل وضع قيادة', 'فعّل وضعية القيادة', 'شغل مود القيادة', 'شغل وضع السياقة']) {
     assert.ok(isDrivingStartCommand(t), t);
   }
-  for (const t of ['اشرح لي وضع القيادة', 'هل وضع القيادة شغال', 'أوقف وضع القيادة', 'وش فايدة وضع القيادة', 'أرسل لأحمد إني في وضع القيادة']) {
+  for (const t of ['اشرح لي وضع القيادة', 'هل وضع القيادة شغال', 'أوقف وضع القيادة', 'وش فايدة وضع القيادة', 'أرسل لأحمد إني في وضع القيادة', 'اشرح وضع قيادة']) {
     assert.ok(!isDrivingStartCommand(t), t);
   }
+  assert.ok(isDrivingStopCommand('أوقف وضع قيادة'));
 });
