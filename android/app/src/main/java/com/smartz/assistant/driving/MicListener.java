@@ -13,10 +13,10 @@ import java.util.ArrayDeque;
 /**
  * Records one sentence from the phone's microphone as a 16 kHz mono WAV.
  *
- * The VOICE_COMMUNICATION source switches on the phone's echo canceller and
- * noise suppressor, which also removes most of the music or navigation
- * prompts the phone itself is playing. Each frame is also checked by Silero
- * VAD (VoiceActivity), so a loud engine or fan is never taken for speech.
+ * The VOICE_RECOGNITION source is tuned for a voice at arm's length (the
+ * phone in its car holder). Each frame is checked by Silero VAD
+ * (VoiceActivity), so a loud engine or fan is never taken for speech, and a
+ * quieter voice from the driver's seat still is.
  * The microphone is opened per sentence and closed before the reply is spoken.
  */
 final class MicListener {
@@ -72,9 +72,13 @@ final class MicListener {
         if (minBuffer <= 0) throw new MicException("الميكروفون غير متاح.");
         int bufferBytes = Math.max(minBuffer, FRAME_SAMPLES * 2 * 4);
 
-        AudioRecord record = open(MediaRecorder.AudioSource.VOICE_COMMUNICATION, bufferBytes);
-        if (record == null) record = open(MediaRecorder.AudioSource.VOICE_RECOGNITION, bufferBytes);
+        // VOICE_RECOGNITION is tuned for a voice at arm's length (a phone in its car
+        // holder). VOICE_COMMUNICATION is tuned for a phone at the ear: its call
+        // processing pulled a voice 50 cm away below the bar, so the driver had to
+        // speak into the microphone to be heard.
+        AudioRecord record = open(MediaRecorder.AudioSource.VOICE_RECOGNITION, bufferBytes);
         if (record == null) record = open(MediaRecorder.AudioSource.MIC, bufferBytes);
+        if (record == null) record = open(MediaRecorder.AudioSource.VOICE_COMMUNICATION, bufferBytes);
         if (record == null) throw new MicException("تعذر فتح الميكروفون.");
 
         AcousticEchoCanceler echo = null;
@@ -84,10 +88,8 @@ final class MicListener {
                 echo = AcousticEchoCanceler.create(record.getAudioSessionId());
                 if (echo != null) echo.setEnabled(true);
             }
-            if (NoiseSuppressor.isAvailable()) {
-                noise = NoiseSuppressor.create(record.getAudioSessionId());
-                if (noise != null) noise.setEnabled(true);
-            }
+            // No NoiseSuppressor: it treats a distant voice as noise. Silero VAD
+            // tells voice from road noise instead (VoiceActivity).
         } catch (RuntimeException ignored) {
             // effects are a bonus; recording works without them
         }
@@ -149,7 +151,7 @@ final class MicListener {
                 } else if (event == SpeechDetector.DISCARD) {
                     speech = null;
                 } else if (event == SpeechDetector.END || event == SpeechDetector.MAX) {
-                    return wav(speech.toByteArray());
+                    return wav(louder(speech.toByteArray()));
                 }
 
                 if (speech == null && SystemClock.elapsedRealtime() > deadline) return null;
@@ -181,6 +183,32 @@ final class MicListener {
             out.write(sample & 0xff);
             out.write((sample >> 8) & 0xff);
         }
+    }
+
+    static final double TARGET_PEAK = 0.7;
+    static final double MAX_GAIN = 8;
+
+    /**
+     * A sentence said from the driver's seat arrives quiet; it is raised (up to
+     * 8x, peak at 70%) before it is sent, so speech-to-text hears it as clearly
+     * as a voice close to the phone. Loud sentences are left as they are.
+     */
+    static byte[] louder(byte[] pcm) {
+        int peak = 1;
+        for (int i = 0; i + 1 < pcm.length; i += 2) {
+            int sample = (short) ((pcm[i] & 0xff) | (pcm[i + 1] << 8));
+            peak = Math.max(peak, Math.abs(sample));
+        }
+        double gain = Math.min(MAX_GAIN, TARGET_PEAK * 32767 / peak);
+        if (gain <= 1.05) return pcm;
+        byte[] out = new byte[pcm.length];
+        for (int i = 0; i + 1 < pcm.length; i += 2) {
+            int sample = (short) ((pcm[i] & 0xff) | (pcm[i + 1] << 8));
+            int raised = (int) Math.max(-32768, Math.min(32767, Math.round(sample * gain)));
+            out[i] = (byte) (raised & 0xff);
+            out[i + 1] = (byte) ((raised >> 8) & 0xff);
+        }
+        return out;
     }
 
     static byte[] wav(byte[] pcm) {

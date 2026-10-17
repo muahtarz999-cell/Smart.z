@@ -275,3 +275,18 @@ test('spoken spellings of "turn on driving mode" start it', async () => {
   }
   assert.ok(isDrivingStopCommand('أوقف وضع قيادة'));
 });
+
+test('a quiet voice from the driver\'s seat starts a sentence when the voice model hears it', async () => {
+  const { createSpeechDetector } = await import('../lib/speech-detector.js');
+  const run = (voiced) => {
+    const d = createSpeechDetector();
+    for (let i = 0; i < 3; i++) d.push(0.003); // quiet room
+    const events = [];
+    for (let i = 0; i < 12; i++) events.push(d.push(0.008, voiced)); // a voice 60 cm away: below the 0.012 loudness bar
+    for (let i = 0; i < 10; i++) events.push(d.push(0.003, false));
+    return events.filter(Boolean);
+  };
+  assert.deepEqual(run(true), ['start', 'end']);
+  assert.deepEqual(run(undefined), []); // without the model, loudness alone still decides
+  assert.deepEqual(run(false), []); // the same level that is not a voice never starts
+});
