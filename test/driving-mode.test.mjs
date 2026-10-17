@@ -234,3 +234,31 @@ test('speech detector with a voice classifier: loud noise never starts a sentenc
   // Without a classifier (undefined) loudness alone decides, as before.
   assert.deepEqual(runVoiced(createSpeechDetector(), [...frames(0.005, undefined, 20), ...frames(0.12, undefined, 15), ...frames(0.004, undefined, 12)]), ['start', 'end']);
 });
+
+test('voice: a driving reply stays in one voice; a failure hands that voice to the phone, never a mix', async () => {
+  const { voiceReply } = await import('../lib/drive-turn.js');
+  const reply = Array.from({ length: 5 }, (_, i) => `هذه الجملة رقم ${i + 1} من الرد، وهي طويلة بما يكفي لتكون مقطعًا مستقلًا عن غيرها في النطق.`).join(' ');
+  // The chosen voice (groq) is rate-limited, so the chain answers with azure for the first chunk.
+  const used = [];
+  const synthesize = async (text, voice) => {
+    const provider = voice.strict ? voice.provider : 'azure';
+    used.push({ provider, strict: Boolean(voice.strict) });
+    return { audio: new Uint8Array([1]), contentType: 'audio/mpeg', provider };
+  };
+  const result = await voiceReply(reply, { provider: 'groq' }, synthesize);
+  assert.equal(result.provider, 'azure');
+  assert.ok(result.audio.length >= 3);
+  assert.deepEqual([...new Set(used.map((u) => u.provider))], ['azure'], 'every chunk in the same voice');
+  assert.ok(used.slice(1).every((u) => u.strict), 'the rest are pinned to it');
+
+  // A pinned chunk that keeps failing: no audio with holes, but the voice is handed on.
+  let calls = 0;
+  const flaky = async (text, voice) => {
+    calls += 1;
+    if (voice.strict && calls > 2) throw new Error('rate limited');
+    return { audio: new Uint8Array([1]), contentType: 'audio/mpeg', provider: 'groq' };
+  };
+  const failed = await voiceReply(reply, {}, flaky);
+  assert.deepEqual(failed.audio, []);
+  assert.equal(failed.provider, 'groq', 'the phone keeps the same voice for its sentence-by-sentence retry');
+});

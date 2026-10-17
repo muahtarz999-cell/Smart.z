@@ -31,7 +31,7 @@ function setup({ cloud = 'ok', deviceFallback = true } = {}) {
   globalThis.fetch = async (url, init) => {
     const body = JSON.parse(init.body);
     requests.push(body);
-    const fail = cloud === 'fail' || (cloud === 'fail-second' && requests.length === 2);
+    const fail = cloud === 'fail' || (cloud === 'fail-second' && requests.length === 2) || (cloud === 'fail-after-first' && requests.length > 1);
     if (fail) return { ok: false, status: 502, json: async () => ({ code: 'CLOUD_TTS_FAILED', message: 'تعذر' }) };
     return { ok: true, status: 200, headers: new Headers({ 'X-TTS-Provider': 'groq' }), blob: async () => new Blob(['a']) };
   };
@@ -62,8 +62,19 @@ test('cloud voice speaks every chunk in order and sends the chosen voice', async
   assert.equal(globalThis.__deviceSpoken.length, 0);
 });
 
+test('a reply keeps one voice: later chunks ask for the first chunk\'s voice only, and any cloud voice rescues a miss', async () => {
+  const requests = setup({ cloud: 'fail-second' });
+  const text = 'الجزء الأول من الرد. ' + 'والجزء الثاني الطويل '.repeat(12);
+  assert.equal(await speech.speak(text), true);
+  assert.equal(requests[1].provider, 'groq', 'the second chunk asks for the voice of the first');
+  assert.equal(requests[1].strict, true, 'and only that voice');
+  assert.equal(requests[2].strict, undefined, 'its miss is retried with any cloud voice');
+  assert.equal(globalThis.__deviceSpoken.length, 0, 'the device voice is not needed');
+  assert.equal(speech.getLastSpeechInfo().engine, 'cloud');
+});
+
 test('when the cloud fails mid-reply, the device voice speaks only the rest', async () => {
-  setup({ cloud: 'fail-second' });
+  setup({ cloud: 'fail-after-first' });
   const text = 'الجزء الأول من الرد. ' + 'والجزء الثاني الطويل '.repeat(12);
   assert.equal(await speech.speak(text), true);
   assert.equal(globalThis.__played.length, 1);

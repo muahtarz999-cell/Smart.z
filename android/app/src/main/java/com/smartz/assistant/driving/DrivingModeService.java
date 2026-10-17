@@ -94,6 +94,8 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
     /** After a reply the driver may answer without the name for this long (same as FOLLOW_UP_MS in the app). */
     private static final long FOLLOW_UP_MS = 12_000;
     private volatile long lastReplyEndedAt = 0;
+    /** The cloud voice this session speaks in; kept so driving mode never switches voice midway. */
+    private volatile String sessionVoice = "";
     private ScheduledFuture<?> pendingSend;
     private JSONObject pendingAction;
     private long lastLevelEmit = 0;
@@ -331,6 +333,8 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         put(turn, "reply", reply);
         DriveEvents.emit("turn", turn, true);
 
+        String voiceProvider = body.optString("voiceProvider", "");
+        if (!voiceProvider.isEmpty()) sessionVoice = voiceProvider;
         speakReply(audio, reply);
         lastReplyEndedAt = SystemClock.elapsedRealtime();
 
@@ -387,11 +391,12 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
     // ------------------------------------------------------------------ speaking
 
     /**
-     * The server's cloud audio. When it came back empty (a voice provider was
-     * rate-limited while voicing the whole reply), the reply is voiced again
-     * sentence by sentence through /api/speech, the path that already voices
-     * the start and stop messages. The phone's own voice comes last, only if
-     * the user allows it.
+     * Three safeguards so a reply is never silent, in the same voice as far as possible:
+     *   1. the server's audio for the whole reply, all in one voice;
+     *   2. if that came back empty, sentence by sentence through /api/speech,
+     *      first in this session's voice only, then any cloud voice (which then
+     *      becomes the session's voice);
+     *   3. the phone's own voice, only if the user allows it.
      */
     private void speakReply(JSONArray audio, String text) {
         setPhase("speaking");
@@ -408,7 +413,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         if (baseUrl.isEmpty()) return text;
         for (int i = 0; i < pieces.size(); i++) {
             if (!running || player.wasInterrupted()) return null;
-            byte[][] audio = DriveClient.speech(baseUrl, token, pieces.get(i), config.optJSONObject("voice"));
+            byte[][] audio = speechInSessionVoice(pieces.get(i));
             boolean played = audio != null && player.playBytes(audio[0], new String(audio[1], StandardCharsets.UTF_8), 100 + i);
             if (!played) {
                 if (player.wasInterrupted()) return null;
@@ -418,12 +423,25 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         return null;
     }
 
-    /** Short app messages (start, stop, errors): cloud voice via /api/speech, else the phone's voice. */
+    /** This session's voice first (that provider only), then any cloud voice, which becomes the session's voice. */
+    private byte[][] speechInSessionVoice(String text) {
+        JSONObject voice = config.optJSONObject("voice");
+        byte[][] audio = null;
+        if (!sessionVoice.isEmpty()) audio = DriveClient.speech(baseUrl, token, text, voice, sessionVoice, true);
+        if (audio == null) audio = DriveClient.speech(baseUrl, token, text, voice, null, false);
+        if (audio != null && audio.length > 2) {
+            String answered = new String(audio[2], StandardCharsets.UTF_8);
+            if (!answered.isEmpty()) sessionVoice = answered;
+        }
+        return audio;
+    }
+
+    /** Short app messages (start, stop, errors): the session's cloud voice via /api/speech, else the phone's voice. */
     private void say(String text) {
         if (text == null || text.isEmpty()) return;
         setPhase("speaking");
         player.resetInterrupt();
-        byte[][] audio = baseUrl.isEmpty() ? null : DriveClient.speech(baseUrl, token, text, config.optJSONObject("voice"));
+        byte[][] audio = baseUrl.isEmpty() ? null : speechInSessionVoice(text);
         boolean played = audio != null && player.playBytes(audio[0], new String(audio[1], StandardCharsets.UTF_8), 99);
         if (!played && !player.wasInterrupted() && deviceFallback) player.speakWithDevice(text);
     }
