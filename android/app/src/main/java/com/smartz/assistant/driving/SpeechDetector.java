@@ -59,6 +59,13 @@ final class SpeechDetector {
         else floor += (level - floor) * FLOOR_CREEP;
     }
 
+    /** Starts over from a known quiet level (used when the voice model is switched off mid-session). */
+    void reseed(double quietFloor) {
+        floor = Math.max(0, quietFloor);
+        calibrationLeft = 0;
+        reset();
+    }
+
     boolean isSpeaking() {
         return speaking;
     }

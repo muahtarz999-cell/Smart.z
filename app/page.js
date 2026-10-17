@@ -182,6 +182,10 @@ export default function Home() {
   const audioFlowRef = useRef(null);
   const drivingRef = useRef(null);
   const [driving, setDriving] = useState({ active: false, engine: null, phase: 'idle' });
+  // What driving mode heard but did not answer, and the detector's numbers (for the on-screen sound check).
+  const [drivingHeard, setDrivingHeard] = useState(null);
+  const [drivingDiagnostics, setDrivingDiagnostics] = useState(null);
+  const lastDiagnosticsAt = useRef(0);
   const pressStartedAtRef = useRef(0);
   const micLevelRef = useRef(0); // written by the recorder ~10x/s, read by the wave without re-rendering
   const profileRef = useRef(DEFAULT_PROFILE);
@@ -660,7 +664,7 @@ export default function Home() {
       },
       onStateChange: (state) => setOrbState(state),
       onLevel: (level) => { micLevelRef.current = level; },
-      onTranscript: (text) => setLastTranscript(text),
+      onTranscript: (text) => { setLastTranscript(text); setDrivingHeard(null); },
       onReply: (text) => {
         setReply(text);
         setAudioPlaybackError('');
@@ -707,7 +711,22 @@ export default function Home() {
         if (next.message) setAudioPlaybackError(next.message);
       },
       onLevel: (level) => { micLevelRef.current = level; },
+      onSessionStart: () => {
+        setLastTranscript('');
+        setReply('');
+        setAudioPlaybackError('');
+        setDrivingHeard(null);
+        setDrivingDiagnostics(null);
+      },
+      onHeard: (heard) => setDrivingHeard(heard.transcript ? heard : null),
+      onDiagnostics: (diagnostics) => {
+        const now = Date.now();
+        if (now - lastDiagnosticsAt.current < 400) return; // a few updates a second are enough to read
+        lastDiagnosticsAt.current = now;
+        setDrivingDiagnostics(diagnostics);
+      },
       onNativeTurn: ({ transcript, reply: spoken }) => {
+        setDrivingHeard(null);
         if (transcript) { setLastTranscript(transcript); addMessage('user', transcript).catch(() => {}); }
         if (spoken) { setReply(spoken); addMessage('assistant', spoken).catch(() => {}); }
       },
@@ -1061,6 +1080,8 @@ export default function Home() {
           onInterrupt={() => drivingRef.current?.interrupt()}
           onStop={() => { setReply(DRIVING_MESSAGES.stopped); void drivingRef.current?.stop('user'); }}
           callByName={getDrivingSettings().callByName}
+          heard={drivingHeard}
+          diagnostics={drivingDiagnostics}
         />
       )}
       <div

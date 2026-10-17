@@ -314,7 +314,14 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
 
         JSONObject body = result.body;
         String kind = body.optString("kind", "reply");
-        if ("ignored".equals(kind)) return;
+        if ("ignored".equals(kind)) {
+            // Shown on screen, never spoken: the driver sees he was heard but not called.
+            JSONObject heard = new JSONObject();
+            put(heard, "transcript", body.optString("transcript", ""));
+            put(heard, "reason", body.optString("reason", "noise"));
+            DriveEvents.emit("heard", heard, false);
+            return;
+        }
         String transcript = body.optString("transcript", "");
         String reply = body.optString("reply", "");
         if ("error".equals(kind) || reply.isEmpty()) {
@@ -601,7 +608,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         DriveEvents.emit("state", data, false);
     }
 
-    private void publishLevel(float level) {
+    private void publishLevel(float level, double threshold, Boolean voiced) {
         bubble.update("listening", level);
         long now = SystemClock.elapsedRealtime();
         if (now - lastLevelEmit < 90) return;
@@ -609,6 +616,10 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         JSONObject data = new JSONObject();
         put(data, "phase", "listening");
         put(data, "level", (double) level);
+        // For the on-screen check: the detector's bar (same 0..1 scale as level) and the voice model.
+        put(data, "threshold", Math.min(1, threshold * 6));
+        if (voiced != null) put(data, "voiced", voiced.booleanValue());
+        put(data, "vad", mic.vadState());
         DriveEvents.emit("state", data, false);
     }
 
