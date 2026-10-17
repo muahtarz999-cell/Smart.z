@@ -374,12 +374,36 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
 
     // ------------------------------------------------------------------ speaking
 
-    /** The server's cloud audio; the phone's voice only if that failed and the user allows it. */
+    /**
+     * The server's cloud audio. When it came back empty (a voice provider was
+     * rate-limited while voicing the whole reply), the reply is voiced again
+     * sentence by sentence through /api/speech, the path that already voices
+     * the start and stop messages. The phone's own voice comes last, only if
+     * the user allows it.
+     */
     private void speakReply(JSONArray audio, String text) {
         setPhase("speaking");
         player.resetInterrupt();
         boolean played = player.playChunks(audio);
-        if (!played && !player.wasInterrupted() && deviceFallback) player.speakWithDevice(text);
+        if (played || player.wasInterrupted()) return;
+        String rest = speakPieces(text);
+        if (rest != null && !player.wasInterrupted() && deviceFallback) player.speakWithDevice(rest);
+    }
+
+    /** Voices the text piece by piece. Returns what is still unspoken (null when done or interrupted). */
+    private String speakPieces(String text) {
+        java.util.List<String> pieces = SpeechText.pieces(text, SpeechText.MAX_PIECE);
+        if (baseUrl.isEmpty()) return text;
+        for (int i = 0; i < pieces.size(); i++) {
+            if (!running || player.wasInterrupted()) return null;
+            byte[][] audio = DriveClient.speech(baseUrl, token, pieces.get(i), config.optJSONObject("voice"));
+            boolean played = audio != null && player.playBytes(audio[0], new String(audio[1], StandardCharsets.UTF_8), 100 + i);
+            if (!played) {
+                if (player.wasInterrupted()) return null;
+                return android.text.TextUtils.join(" ", pieces.subList(i, pieces.size()));
+            }
+        }
+        return null;
     }
 
     /** Short app messages (start, stop, errors): cloud voice via /api/speech, else the phone's voice. */

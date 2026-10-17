@@ -55,11 +55,29 @@ test('speech detector: road noise raises the bar; a bump is discarded, not sent'
   const detector = createSpeechDetector();
   // Steady road noise at 0.03 never triggers.
   assert.deepEqual(run(detector, repeat(0.03, 100)), []);
-  assert.ok(detector.threshold > 0.08, `threshold follows the noise (${detector.threshold})`);
+  // The bar follows the noise, with a smaller margin in a loud car (2x, not 3x).
+  assert.ok(detector.threshold > 0.05 && detector.threshold < 0.08, `threshold follows the noise (${detector.threshold})`);
   // A short bump (300 ms) above the bar → discard.
   assert.deepEqual(run(detector, [...repeat(0.2, 3), ...repeat(0.03, 10)]).map(([e]) => e), ['start', 'discard']);
   // A real sentence over the noise → end.
   assert.deepEqual(run(detector, [...repeat(0.25, 20), ...repeat(0.03, 10)]).map(([e]) => e), ['start', 'end']);
+});
+
+test('speech detector: a normal voice is heard over road noise, and does not raise the bar itself', () => {
+  // Before: road noise 0.03 put the bar at 0.09, and the voice frames under it
+  // dragged the floor up until the bar reached 0.14; nothing was ever heard.
+  const detector = createSpeechDetector();
+  const events = run(detector, [...repeat(0.03, 40), ...repeat(0.08, 20), ...repeat(0.03, 12)]).map(([e]) => e);
+  assert.deepEqual(events, ['start', 'end']);
+  // Soft speech that stays under the bar must not move it up much either.
+  const soft = createSpeechDetector();
+  run(soft, repeat(0.03, 40));
+  const before = soft.threshold;
+  run(soft, repeat(0.055, 30));
+  assert.ok(soft.threshold - before < 0.01, `bar stayed put (${before} → ${soft.threshold})`);
+  // A quieter room brings the bar back down quickly.
+  run(soft, repeat(0.006, 15));
+  assert.ok(soft.threshold < 0.03, `bar falls with the room (${soft.threshold})`);
 });
 
 test('speech detector: short pauses inside a sentence do not cut it; the 30 s limit does', () => {
@@ -136,4 +154,24 @@ test('drive turn: when every cloud voice fails the reply still arrives (the phon
   assert.equal(result.reply, 'الساعة الثالثة.');
   assert.deepEqual(result.audio, []);
   assert.equal(textForSpeech('**مهم**: راجع https://x.y\n- أولاً'), 'مهم: راجع أولاً');
+});
+
+test('drive turn: reply chunks are voiced at most two at a time, in order', async () => {
+  const { speakChunks, SPEECH_CONCURRENCY } = await import('../lib/drive-turn.js');
+  let active = 0;
+  let peak = 0;
+  const synthesize = async (chunk) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active -= 1;
+    return { audio: new TextEncoder().encode(chunk), contentType: 'audio/wav' };
+  };
+  const reply = Array.from({ length: 6 }, (_, i) => `هذه الجملة رقم ${i + 1} في الرد وهي طويلة بما يكفي لتكون مقطعًا مستقلًا عن غيرها تمامًا.`).join(' ');
+  const audio = await speakChunks(reply, {}, synthesize);
+  assert.ok(audio.length >= 3, `several chunks (${audio.length})`);
+  assert.ok(peak <= SPEECH_CONCURRENCY, `never more than ${SPEECH_CONCURRENCY} at once (peak ${peak})`);
+  const decoded = audio.map((a) => new TextDecoder().decode(Uint8Array.from(atob(a.data), (c) => c.charCodeAt(0))));
+  assert.match(decoded[0], /رقم 1/);
+  assert.match(decoded.at(-1), /رقم 6/);
 });
