@@ -90,3 +90,18 @@ test('driving mode: a failed voice chunk is retried, and messages reach the assi
   assert.equal(result.reply, 'لا جديد');
   assert.deepEqual(seen.lines, ['[س] أحمد: هلا']);
 });
+
+test('«رسالة صوتية» in the request always sends a voice note, even if the model forgot as_voice', async () => {
+  const { asksForVoice, withVoiceRequest } = await import('../lib/assistant-response.js');
+  for (const t of ['أرسل لأحمد رسالة صوتية إني بتأخر', 'ابعث فويس لأمي', 'قول لخالد بصوتك إني وصلت', 'سجل ريكورد لسارة']) assert.ok(asksForVoice(t), t);
+  for (const t of ['أرسل لأحمد إني بتأخر', 'لخص رسائلي']) assert.ok(!asksForVoice(t), t);
+  const turn = { reply: '', toolCalls: [{ name: 'send_whatsapp_message', args: { contact_name: 'أحمد', message: 'بتأخر' } }] };
+  assert.equal(withVoiceRequest(turn, 'أرسل لأحمد رسالة صوتية إني بتأخر').toolCalls[0].args.as_voice, true);
+  assert.equal(withVoiceRequest(turn, 'أرسل لأحمد إني بتأخر').toolCalls[0].args.as_voice, undefined);
+});
+
+test('messages in disappearing-message chats and view-once media reach the inbox', () => {
+  assert.equal(describeMessage({ message: { ephemeralMessage: { message: { extendedTextMessage: { text: 'وينك؟' } } } } }), 'وينك؟');
+  assert.equal(describeMessage({ message: { viewOnceMessageV2: { message: { imageMessage: { caption: 'شوف' } } } } }), 'صورة: شوف');
+  assert.equal(describeMessage({ message: { ephemeralMessage: { message: { audioMessage: {} } } } }), 'رسالة صوتية');
+});
