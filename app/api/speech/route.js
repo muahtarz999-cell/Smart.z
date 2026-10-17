@@ -25,6 +25,7 @@ export async function POST(request) {
     const result = await synthesizeWithFallback(text, {
       provider: typeof body.provider === 'string' ? body.provider : undefined,
       voices: body.voices && typeof body.voices === 'object' ? body.voices : {},
+      strict: body.strict === true, // keep this voice; the caller falls back itself
     });
     return new Response(result.audio, {
       headers: {

@@ -58,6 +58,7 @@ export async function POST(request) {
       synthesize: (text, voice) => synthesizeWithFallback(text, {
         provider: typeof voice?.provider === 'string' && voice.provider !== 'auto' ? voice.provider : undefined,
         voices: voice?.voices && typeof voice.voices === 'object' ? voice.voices : {},
+        strict: voice?.strict === true,
       }),
     });
     return json(result);

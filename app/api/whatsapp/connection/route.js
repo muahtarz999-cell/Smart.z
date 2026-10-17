@@ -47,3 +47,23 @@ export async function GET(request) {
     { headers: { 'Cache-Control': 'no-store' } }
   );
 }
+
+// Disconnects the official WhatsApp Business link: removes the connection and,
+// through the foreign key's ON DELETE CASCADE, its stored Meta access token.
+export async function DELETE(request) {
+  const access = await requireCustomerRegistered(request);
+  if (!access.ok) return customerAccessResponse(access);
+
+  const { error } = await access.client
+    .from('whatsapp_connections')
+    .delete()
+    .eq('user_id', access.user.id);
+  if (error) {
+    console.error('[WhatsApp connection] Delete failed', { code: error.code ?? null });
+    return NextResponse.json(
+      { error: true, message: 'تعذر فصل ربط WhatsApp.' },
+      { status: 503, headers: { 'Cache-Control': 'no-store' } }
+    );
+  }
+  return NextResponse.json({ success: true }, { headers: { 'Cache-Control': 'no-store' } });
+}

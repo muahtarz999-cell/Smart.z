@@ -16,8 +16,10 @@ const PHASES = {
  * large type. A tap anywhere stops the assistant talking; only the red button
  * ends driving mode, so a stray touch never does.
  */
-export default function DrivingScreen({ phase, levelRef, transcript, reply, error, onInterrupt, onStop }) {
-  const view = PHASES[phase] || PHASES.idle;
+export default function DrivingScreen({ phase, levelRef, transcript, reply, error, onInterrupt, onStop, callByName = false }) {
+  const view = phase === 'listening' && callByName
+    ? { label: PHASES.listening.label, hint: 'نادِ «سمارت» قبل سؤالك' }
+    : PHASES[phase] || PHASES.idle;
   const waveState = phase === 'speaking' ? 'speaking' : phase === 'listening' ? 'listening' : phase === 'paused' ? 'ready' : 'thinking';
 
   return (
@@ -34,7 +36,8 @@ export default function DrivingScreen({ phase, levelRef, transcript, reply, erro
 
       <div className="mt-8 text-center">
         <p className="text-4xl font-bold text-text-primary">{view.label}</p>
-        {view.hint && <p className="mt-2 text-base text-text-secondary">{view.hint}</p>}
+        {view.hint && <p className={`mt-2 ${callByName && phase === 'listening' ? 'text-xl font-semibold text-gold' : 'text-base text-text-secondary'}`}>{view.hint}</p>}
+        {callByName && <p className="mt-1 text-xs text-text-secondary">مثال: «سمارت، اقرأ رسائلي». أحاديث الركاب لا يرد عليها.</p>}
       </div>
 
       <div className="mt-6 min-w-0">

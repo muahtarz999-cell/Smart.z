@@ -78,3 +78,21 @@ test('Gemini audio is found in the interactions shape and the legacy shape', () 
   assert.equal(findGeminiAudio({ candidates: [{ content: { parts: [{ inlineData: { data: 'TU5P' } }] } }] }), 'TU5P');
   assert.equal(findGeminiAudio({}), null);
 });
+
+test('strict keeps the chosen voice: no other provider is tried, so the voice never changes', async () => {
+  env({ GOOGLE_TTS_API_KEY: 'k', AZURE_SPEECH_KEY: 'a', AZURE_SPEECH_REGION: 'uaenorth', TTS_PROVIDER_ORDER: 'azure,google' });
+  const hosts = [];
+  globalThis.fetch = async (url) => {
+    hosts.push(new URL(url).hostname);
+    if (String(url).includes('microsoft')) return { ok: false, status: 429, headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(0) };
+    return { ok: true, status: 200, json: async () => ({ audioContent: btoa('x'.repeat(100)) }) };
+  };
+  await assert.rejects(synthesizeWithFallback('مرحبا', { provider: 'azure', strict: true }), (error) => {
+    assert.deepEqual(error.failures, ['azure:RATE_LIMITED']);
+    return true;
+  });
+  assert.ok(hosts.every((host) => host.includes('microsoft')), 'only the chosen voice was asked');
+  // Without strict the chain carries on to the next voice, as before.
+  const result = await synthesizeWithFallback('مرحبا', { provider: 'azure' });
+  assert.equal(result.provider, 'google');
+});

@@ -15,8 +15,9 @@ import java.util.ArrayDeque;
  *
  * The VOICE_COMMUNICATION source switches on the phone's echo canceller and
  * noise suppressor, which also removes most of the music or navigation
- * prompts the phone itself is playing. The microphone is opened per sentence
- * and closed before the reply is spoken.
+ * prompts the phone itself is playing. Each frame is also checked by Silero
+ * VAD (VoiceActivity), so a loud engine or fan is never taken for speech.
+ * The microphone is opened per sentence and closed before the reply is spoken.
  */
 final class MicListener {
     interface LevelSink {
@@ -30,10 +31,15 @@ final class MicListener {
     }
 
     static final int SAMPLE_RATE = 16_000;
-    private static final int FRAME_SAMPLES = 1_600; // 100 ms
+    private static final int FRAME_SAMPLES = VoiceActivity.WINDOW * 3; // 1536 samples = 96 ms, three VAD windows
     private static final int PRE_ROLL_FRAMES = 5; // 300 ms before + the 200 ms that triggered the start
 
     private volatile boolean aborted = false;
+    private final VoiceActivity voiceActivity; // null or unavailable: loudness alone decides
+
+    MicListener(VoiceActivity voiceActivity) {
+        this.voiceActivity = voiceActivity;
+    }
 
     void abort() {
         aborted = true;
@@ -106,7 +112,8 @@ final class MicListener {
                     writeFrame(speech, frame);
                 }
 
-                int event = detector.push(rms);
+                Boolean voiced = voiceActivity != null ? voiceActivity.isSpeech(frame) : null;
+                int event = detector.push(rms, voiced);
                 if (event == SpeechDetector.START) {
                     speech = new ByteArrayOutputStream(SAMPLE_RATE * 2 * 6);
                     for (short[] earlier : ring) writeFrame(speech, earlier);

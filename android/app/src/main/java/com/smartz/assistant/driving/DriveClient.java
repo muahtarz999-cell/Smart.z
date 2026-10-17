@@ -62,6 +62,15 @@ final class DriveClient {
 
     /** Audio from POST /api/speech, or null when no cloud voice answered. */
     static byte[][] speech(String baseUrl, String token, String text, JSONObject voice) {
+        return speech(baseUrl, token, text, voice, null, false);
+    }
+
+    /**
+     * Same, with a provider to prefer (the voice this session already speaks in).
+     * strict: that provider only, so the voice never changes; null when it cannot answer.
+     * Returns { audio, contentType, provider } as bytes, or null.
+     */
+    static byte[][] speech(String baseUrl, String token, String text, JSONObject voice, String preferProvider, boolean strict) {
         try {
             JSONObject body = new JSONObject();
             body.put("text", text);
@@ -71,6 +80,8 @@ final class DriveClient {
                 JSONObject voices = voice.optJSONObject("voices");
                 if (voices != null) body.put("voices", voices);
             }
+            if (preferProvider != null && !preferProvider.isEmpty()) body.put("provider", preferProvider);
+            if (strict) body.put("strict", true);
             HttpURLConnection connection = open(baseUrl + "/api/speech", token, 20_000);
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             try (OutputStream out = connection.getOutputStream()) {
@@ -79,11 +90,16 @@ final class DriveClient {
             try {
                 if (connection.getResponseCode() != 200) return null;
                 String type = connection.getContentType();
+                String answered = connection.getHeaderField("X-TTS-Provider");
                 try (InputStream in = connection.getInputStream(); ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
                     byte[] chunk = new byte[16_384];
                     int n;
                     while ((n = in.read(chunk)) != -1) buffer.write(chunk, 0, n);
-                    return new byte[][] { buffer.toByteArray(), (type == null ? "" : type).getBytes(StandardCharsets.UTF_8) };
+                    return new byte[][] {
+                        buffer.toByteArray(),
+                        (type == null ? "" : type).getBytes(StandardCharsets.UTF_8),
+                        (answered == null ? "" : answered).getBytes(StandardCharsets.UTF_8),
+                    };
                 }
             } finally {
                 connection.disconnect();

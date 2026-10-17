@@ -67,6 +67,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
     private Handler main;
     private ReplyPlayer player;
     private MicListener mic;
+    private VoiceActivity voiceActivity;
     private ScheduledExecutorService scheduler;
     private BubbleOverlay bubble;
     private AudioManager audioManager;
@@ -88,6 +89,13 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
     private boolean confirmEverySend = false;
     private boolean deviceFallback = true;
     private boolean bubbleEnabled = true;
+    /** Answer only sentences that call the assistant by name (passengers talking in the car). */
+    private boolean callByName = false;
+    /** After a reply the driver may answer without the name for this long (same as FOLLOW_UP_MS in the app). */
+    private static final long FOLLOW_UP_MS = 12_000;
+    private volatile long lastReplyEndedAt = 0;
+    /** The cloud voice this session speaks in; kept so driving mode never switches voice midway. */
+    private volatile String sessionVoice = "";
     private ScheduledFuture<?> pendingSend;
     private JSONObject pendingAction;
     private long lastLevelEmit = 0;
@@ -152,7 +160,8 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         instance = this;
         main = new Handler(Looper.getMainLooper());
         player = new ReplyPlayer(this);
-        mic = new MicListener();
+        voiceActivity = new VoiceActivity(this); // Silero VAD: a voice vs. steady car noise
+        mic = new MicListener(voiceActivity);
         scheduler = Executors.newSingleThreadScheduledExecutor();
         bubble = new BubbleOverlay(this, this);
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
@@ -200,6 +209,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         running = false;
         mic.abort();
         player.release();
+        if (voiceActivity != null) voiceActivity.close();
         scheduler.shutdown();
         bubble.hide();
         releaseFocus();
@@ -228,6 +238,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         JSONObject voice = next.optJSONObject("voice");
         deviceFallback = voice == null || voice.optBoolean("deviceFallback", true);
         bubbleEnabled = next.optBoolean("bubble", true);
+        callByName = next.optBoolean("callByName", false);
         failures = 0;
     }
 
@@ -322,7 +333,10 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         put(turn, "reply", reply);
         DriveEvents.emit("turn", turn, true);
 
+        String voiceProvider = body.optString("voiceProvider", "");
+        if (!voiceProvider.isEmpty()) sessionVoice = voiceProvider;
         speakReply(audio, reply);
+        lastReplyEndedAt = SystemClock.elapsedRealtime();
 
         if ("stop".equals(kind)) {
             stopDriving("user", false);
@@ -349,6 +363,8 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         put(context, "preferences", config.opt("preferences"));
         put(context, "voice", config.opt("voice"));
         put(context, "confirmEverySend", confirmEverySend);
+        put(context, "callByName", callByName);
+        put(context, "followUp", lastReplyEndedAt > 0 && SystemClock.elapsedRealtime() - lastReplyEndedAt < FOLLOW_UP_MS);
         synchronized (this) {
             put(context, "pendingSend", pendingAction != null);
         }
@@ -374,20 +390,58 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
 
     // ------------------------------------------------------------------ speaking
 
-    /** The server's cloud audio; the phone's voice only if that failed and the user allows it. */
+    /**
+     * Three safeguards so a reply is never silent, in the same voice as far as possible:
+     *   1. the server's audio for the whole reply, all in one voice;
+     *   2. if that came back empty, sentence by sentence through /api/speech,
+     *      first in this session's voice only, then any cloud voice (which then
+     *      becomes the session's voice);
+     *   3. the phone's own voice, only if the user allows it.
+     */
     private void speakReply(JSONArray audio, String text) {
         setPhase("speaking");
         player.resetInterrupt();
         boolean played = player.playChunks(audio);
-        if (!played && !player.wasInterrupted() && deviceFallback) player.speakWithDevice(text);
+        if (played || player.wasInterrupted()) return;
+        String rest = speakPieces(text);
+        if (rest != null && !player.wasInterrupted() && deviceFallback) player.speakWithDevice(rest);
     }
 
-    /** Short app messages (start, stop, errors): cloud voice via /api/speech, else the phone's voice. */
+    /** Voices the text piece by piece. Returns what is still unspoken (null when done or interrupted). */
+    private String speakPieces(String text) {
+        java.util.List<String> pieces = SpeechText.pieces(text, SpeechText.MAX_PIECE);
+        if (baseUrl.isEmpty()) return text;
+        for (int i = 0; i < pieces.size(); i++) {
+            if (!running || player.wasInterrupted()) return null;
+            byte[][] audio = speechInSessionVoice(pieces.get(i));
+            boolean played = audio != null && player.playBytes(audio[0], new String(audio[1], StandardCharsets.UTF_8), 100 + i);
+            if (!played) {
+                if (player.wasInterrupted()) return null;
+                return android.text.TextUtils.join(" ", pieces.subList(i, pieces.size()));
+            }
+        }
+        return null;
+    }
+
+    /** This session's voice first (that provider only), then any cloud voice, which becomes the session's voice. */
+    private byte[][] speechInSessionVoice(String text) {
+        JSONObject voice = config.optJSONObject("voice");
+        byte[][] audio = null;
+        if (!sessionVoice.isEmpty()) audio = DriveClient.speech(baseUrl, token, text, voice, sessionVoice, true);
+        if (audio == null) audio = DriveClient.speech(baseUrl, token, text, voice, null, false);
+        if (audio != null && audio.length > 2) {
+            String answered = new String(audio[2], StandardCharsets.UTF_8);
+            if (!answered.isEmpty()) sessionVoice = answered;
+        }
+        return audio;
+    }
+
+    /** Short app messages (start, stop, errors): the session's cloud voice via /api/speech, else the phone's voice. */
     private void say(String text) {
         if (text == null || text.isEmpty()) return;
         setPhase("speaking");
         player.resetInterrupt();
-        byte[][] audio = baseUrl.isEmpty() ? null : DriveClient.speech(baseUrl, token, text, config.optJSONObject("voice"));
+        byte[][] audio = baseUrl.isEmpty() ? null : speechInSessionVoice(text);
         boolean played = audio != null && player.playBytes(audio[0], new String(audio[1], StandardCharsets.UTF_8), 99);
         if (!played && !player.wasInterrupted() && deviceFallback) player.speakWithDevice(text);
     }

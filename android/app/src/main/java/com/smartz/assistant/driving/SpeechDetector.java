@@ -6,6 +6,9 @@ package com.smartz.assistant.driving;
  * the first 300 ms measure the room, the noise floor then follows it while
  * nobody speaks, speech starts after 200 ms above the bar and ends after
  * 900 ms below it; anything under 450 ms is a bump, not a sentence.
+ * The bar is 3x the floor in a quiet room and 2x in a loud car, and frames
+ * well above the floor (soft speech) barely move it, so road noise cannot
+ * push the bar above a normal voice.
  */
 final class SpeechDetector {
     static final int NONE = 0;
@@ -21,7 +24,12 @@ final class SpeechDetector {
     private static final double MIN_THRESHOLD = 0.012;
     private static final double MAX_THRESHOLD = 0.25;
     private static final double NOISE_FACTOR = 3;
+    private static final double NOISY_FACTOR = 2;
+    private static final double QUIET_FLOOR = 0.01;
+    private static final double NOISY_FLOOR = 0.03;
     private static final double FLOOR_ADAPT = 0.05;
+    private static final double FLOOR_FALL = 0.2;
+    private static final double FLOOR_CREEP = 0.005;
     private static final double CALIBRATION_MS = 300;
     private static final double KEEP_RATIO = 0.7;
 
@@ -39,7 +47,16 @@ final class SpeechDetector {
     }
 
     double threshold() {
-        return Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, Math.max(0, floor) * NOISE_FACTOR));
+        double f = Math.max(0, floor);
+        double t = Math.min(1, Math.max(0, (f - QUIET_FLOOR) / (NOISY_FLOOR - QUIET_FLOOR)));
+        double factor = NOISE_FACTOR + (NOISY_FACTOR - NOISE_FACTOR) * t;
+        return Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, f * factor));
+    }
+
+    private void adaptFloor(double level) {
+        if (level < floor) floor += (level - floor) * FLOOR_FALL;
+        else if (level < floor * 1.5) floor += (level - floor) * FLOOR_ADAPT;
+        else floor += (level - floor) * FLOOR_CREEP;
     }
 
     boolean isSpeaking() {
@@ -54,6 +71,14 @@ final class SpeechDetector {
     }
 
     int push(double rms) {
+        return push(rms, null);
+    }
+
+    /**
+     * voiced: Silero VAD's verdict for this frame (TRUE a human voice, FALSE not a
+     * voice), or null when no classifier is available and loudness alone decides.
+     */
+    int push(double rms, Boolean voiced) {
         double level = Double.isNaN(rms) || rms < 0 ? 0 : rms;
         if (calibrationLeft > 0) {
             floor = floor < 0 ? level : Math.min(floor, level);
@@ -61,7 +86,13 @@ final class SpeechDetector {
             return NONE;
         }
         if (!speaking) {
-            floor += (level - floor) * FLOOR_ADAPT;
+            if (Boolean.FALSE.equals(voiced)) {
+                // Loud but not a voice: it is the room, however loud, and never starts a sentence.
+                floor += (level - floor) * (level < floor ? FLOOR_FALL : FLOOR_ADAPT);
+                loudRun = 0;
+                return NONE;
+            }
+            adaptFloor(level);
             if (level > threshold()) {
                 loudRun += 1;
                 if (loudRun * frameMs >= START_MS) {
@@ -77,7 +108,8 @@ final class SpeechDetector {
         }
 
         speechFrames += 1;
-        if (level > threshold() * KEEP_RATIO) quietRun = 0;
+        // Noise that is not a voice counts as a pause, so a sentence ends in a loud car.
+        if (level > threshold() * KEEP_RATIO && !Boolean.FALSE.equals(voiced)) quietRun = 0;
         else quietRun += 1;
 
         if (speechFrames * frameMs >= MAX_SPEECH_MS) {
