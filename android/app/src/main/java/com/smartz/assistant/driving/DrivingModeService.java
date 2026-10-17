@@ -424,6 +424,9 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
             body.put("recipients", action.optJSONArray("recipients"));
             body.put("text", action.optString("text", ""));
             body.put("manualConfirmation", false);
+            body.put("asVoice", action.optBoolean("asVoice", false));
+            JSONObject voice = config.optJSONObject("voice");
+            if (voice != null) body.put("voice", voice);
             DriveClient.Result result = DriveClient.postJson(baseUrl, "/api/whatsapp/cluster/send", token, body);
             if (!result.ok() || result.body.optInt("failed", 0) > 0) {
                 notice("تعذر إرسال الرسالة إلى " + names + ".");
