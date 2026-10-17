@@ -1207,19 +1207,26 @@ export default function Home() {
                 >
                   📎
                 </button>
+                {/* min-w-0: without it the input keeps its natural width and pushes the send
+                    button out of the panel (clipped) on narrow phones or with a larger font. */}
                 <input
                   type="text"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   placeholder={attachment ? 'اسأل عن الملف المرفق' : 'اسأل المساعد أي شيء'}
-                  className="flex-1 bg-base-card border border-base-border text-text-primary rounded-lg h-10 px-3 text-sm text-right"
+                  enterKeyHint="send"
+                  className="min-w-0 flex-1 bg-base-card border border-base-border text-text-primary rounded-lg h-10 px-3 text-sm text-right"
                 />
                 <button
                   type="submit"
-                  className="w-10 h-10 rounded-full bg-gold flex items-center justify-center flex-shrink-0"
+                  disabled={!message.trim() || loading}
+                  className="w-10 h-10 rounded-full bg-gold text-base-bg flex items-center justify-center flex-shrink-0 transition-opacity disabled:opacity-40"
                   aria-label="إرسال"
                 >
-                  ➤
+                  {/* Paper plane pointing left: the direction of travel in a right-to-left layout. */}
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true" style={{ transform: 'scaleX(-1)' }}>
+                    <path d="M3.4 20.4 21 12 3.4 3.6v6.5L15 12 3.4 13.9z" />
+                  </svg>
                 </button>
               </form>
             </>
