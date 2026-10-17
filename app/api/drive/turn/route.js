@@ -47,13 +47,22 @@ export async function POST(request) {
         if (!isInboxQuestion(transcript)) return undefined;
         const phone = context.inbox && Array.isArray(context.inbox.lines) ? context.inbox : { lines: [], count: 0 };
         let waiting = { lines: [], count: 0 };
+        let waking = false;
         if (node) {
           try {
             const result = await callNode(node, '/api/inbox', { timeoutMs: 8_000 });
+            waking = !result.ok || result.data?.connected === false;
             waiting = buildInboxContext(sanitizeInboxItems(result.data?.items));
-          } catch {}
+          } catch {
+            waking = true; // asleep: the assistant says so instead of "no messages"
+          }
         }
-        return { count: (Number(phone.count) || 0) + waiting.count, lines: [...phone.lines, ...waiting.lines] };
+        return {
+          count: (Number(phone.count) || 0) + waiting.count,
+          lines: [...phone.lines, ...waiting.lines],
+          linked: Boolean(node),
+          waking,
+        };
       },
       synthesize: (text, voice) => synthesizeWithFallback(text, {
         provider: typeof voice?.provider === 'string' && voice.provider !== 'auto' ? voice.provider : undefined,

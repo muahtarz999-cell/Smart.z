@@ -479,7 +479,9 @@ app.get('/api/connect', async (req, res) => {
 });
 
 // The phone collects waiting messages, stores them locally, then confirms.
-app.get('/api/inbox', (_req, res) => res.json({ success: true, items: inbox.list() }));
+// connected=false right after a cold start: the socket is still catching up,
+// so an empty list does not mean "no messages".
+app.get('/api/inbox', (_req, res) => res.json({ success: true, connected: node.status === 'CONNECTED', items: inbox.list() }));
 
 app.post('/api/inbox/ack', (req, res) => {
   const removed = inbox.ack(req.body?.ids);

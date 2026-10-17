@@ -20,7 +20,7 @@ export async function GET(request) {
   try {
     const result = await callNode(node, '/api/inbox', { timeoutMs: 20_000 });
     const items = sanitizeInboxItems(result.data?.items);
-    return json({ success: Boolean(result.ok), linked: true, items });
+    return json({ success: Boolean(result.ok), linked: true, waking: result.data?.connected === false, items });
   } catch {
     // A sleeping free node takes up to a minute to wake; the next sync collects.
     return json({ success: false, linked: true, waking: true, items: [] }, 202);
