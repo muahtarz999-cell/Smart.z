@@ -21,7 +21,8 @@ import java.util.ArrayDeque;
  */
 final class MicListener {
     interface LevelSink {
-        void onLevel(float level);
+        /** level 0..1 for the wave; threshold and voiced are what the detector compared (for the on-screen check). */
+        void onFrame(float level, double threshold, Boolean voiced);
     }
 
     static final class MicException extends Exception {
@@ -37,8 +38,23 @@ final class MicListener {
     private volatile boolean aborted = false;
     private final VoiceActivity voiceActivity; // null or unavailable: loudness alone decides
 
+    // Safety valve: if the voice model keeps saying "not a voice" for sound that is
+    // clearly loud and it has never once said "voice", it is not working on this
+    // phone; it is switched off for the session so the driver is still heard.
+    private static final int DISTRUST_AFTER_FRAMES = 25; // ~2.4 s of loud audio rejected
+    private int loudRejected = 0;
+    private boolean everVoiced = false;
+    private double quietest = Double.MAX_VALUE; // the quietest frame this session: the room without anyone talking
+    private volatile boolean vadOff = false;
+
     MicListener(VoiceActivity voiceActivity) {
         this.voiceActivity = voiceActivity;
+    }
+
+    /** on | off (switched off by the safety valve) | unavailable (no model on this phone). */
+    String vadState() {
+        if (voiceActivity == null || !voiceActivity.available()) return "unavailable";
+        return vadOff ? "off" : "on";
     }
 
     void abort() {
@@ -103,7 +119,20 @@ final class MicListener {
                     sum += value * value;
                 }
                 double rms = Math.sqrt(sum / FRAME_SAMPLES);
-                if (sink != null) sink.onLevel((float) Math.min(1, rms * 6));
+                Boolean voiced = vadOff || voiceActivity == null ? null : voiceActivity.isSpeech(frame);
+                if (Boolean.TRUE.equals(voiced)) everVoiced = true;
+                quietest = Math.min(quietest, rms);
+                // Measured against the quiet room, not the detector's bar (which rises while the model says "noise").
+                if (Boolean.FALSE.equals(voiced) && !everVoiced && rms > Math.max(0.02, quietest * 4)) {
+                    loudRejected++;
+                    if (loudRejected >= DISTRUST_AFTER_FRAMES) {
+                        vadOff = true;
+                        voiced = null;
+                        // The rejected frames raised the bar; go back to the quiet room so the voice is heard now.
+                        detector.reseed(quietest);
+                    }
+                }
+                if (sink != null) sink.onFrame((float) Math.min(1, rms * 6), detector.threshold(), voiced);
 
                 if (speech == null) {
                     ring.addLast(frame);
@@ -112,7 +141,6 @@ final class MicListener {
                     writeFrame(speech, frame);
                 }
 
-                Boolean voiced = voiceActivity != null ? voiceActivity.isSpeech(frame) : null;
                 int event = detector.push(rms, voiced);
                 if (event == SpeechDetector.START) {
                     speech = new ByteArrayOutputStream(SAMPLE_RATE * 2 * 6);
@@ -132,7 +160,7 @@ final class MicListener {
             record.release();
             if (echo != null) echo.release();
             if (noise != null) noise.release();
-            if (sink != null) sink.onLevel(0);
+            if (sink != null) sink.onFrame(0, 0, null);
         }
     }
 
