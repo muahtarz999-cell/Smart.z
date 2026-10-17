@@ -36,3 +36,14 @@ textarea {
   animation-timing-function: ease-in-out;
   animation-iteration-count: infinite;
 }
+
+/* iPhone zooms the whole page when a field under 16px gets focus. On iOS only
+   (the -webkit-touch-callout test matches iOS Safari and its WebView), fields
+   get 16px so typing never zooms; Android and desktop keep the design sizes. */
+@supports (-webkit-touch-callout: none) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
