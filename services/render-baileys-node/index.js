@@ -480,9 +480,10 @@ app.get('/api/contacts/search', (req, res) => {
 });
 
 app.post('/api/send', async (req, res) => {
-  const { remoteJid, text, document } = req.body || {};
+  const { remoteJid, text, document, voice } = req.body || {};
   const hasText = typeof text === 'string' && text.trim();
   const hasDocument = document && typeof document.data === 'string';
+  const voiceParts = Array.isArray(voice) ? voice.filter((part) => typeof part?.data === 'string').slice(0, 20) : [];
   if (typeof remoteJid !== 'string' || (!hasText && !hasDocument)) {
     return res.status(400).json({ success: false, error: 'Missing remoteJid, text or document' });
   }
@@ -490,6 +491,18 @@ app.post('/api/send', async (req, res) => {
     return res.status(503).json({ success: false, error: 'NOT_CONNECTED' });
   }
   try {
+    if (voiceParts.length && !hasDocument) {
+      // A voice message the user asked for: the cloud voice reading the text, as a real voice note.
+      try {
+        await node.sock.sendPresenceUpdate('recording', remoteJid).catch(() => {});
+        const ogg = await toVoiceNote(voiceParts.map((part) => Buffer.from(part.data, 'base64')));
+        const sentVoice = await node.sock.sendMessage(remoteJid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+        await node.sock.sendPresenceUpdate('paused', remoteJid).catch(() => {});
+        return res.json({ success: true, voice: true, messageId: sentVoice?.key?.id || null });
+      } catch (error) {
+        logger.error({ error }, 'voice send failed; sending text');
+      }
+    }
     await node.sock.sendPresenceUpdate('composing', remoteJid).catch(() => {});
     const sent = hasDocument
       ? await node.sock.sendMessage(remoteJid, {
