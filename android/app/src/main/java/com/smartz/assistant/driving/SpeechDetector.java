@@ -32,6 +32,10 @@ final class SpeechDetector {
     private static final double FLOOR_CREEP = 0.005;
     private static final double CALIBRATION_MS = 300;
     private static final double KEEP_RATIO = 0.7;
+    // When Silero hears a human voice, it only has to stand out a little from the
+    // room: a voice from the driver's seat is quieter than one at the microphone.
+    private static final double VOICED_FACTOR = 1.4;
+    private static final double MIN_VOICED_THRESHOLD = 0.004;
 
     private final double frameMs;
     private boolean speaking = false;
@@ -51,6 +55,15 @@ final class SpeechDetector {
         double t = Math.min(1, Math.max(0, (f - QUIET_FLOOR) / (NOISY_FLOOR - QUIET_FLOOR)));
         double factor = NOISE_FACTOR + (NOISY_FACTOR - NOISE_FACTOR) * t;
         return Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, f * factor));
+    }
+
+    /** The bar while the voice model says "a human voice": lower than the loudness bar. */
+    double voicedThreshold() {
+        return Math.min(threshold(), Math.max(MIN_VOICED_THRESHOLD, Math.max(0, floor) * VOICED_FACTOR));
+    }
+
+    private double barFor(Boolean voiced) {
+        return Boolean.TRUE.equals(voiced) ? voicedThreshold() : threshold();
     }
 
     private void adaptFloor(double level) {
@@ -99,8 +112,10 @@ final class SpeechDetector {
                 loudRun = 0;
                 return NONE;
             }
-            adaptFloor(level);
-            if (level > threshold()) {
+            double bar = barFor(voiced);
+            // A voice does not raise the room's level; only sounds below the bar do.
+            if (!Boolean.TRUE.equals(voiced) || level <= bar) adaptFloor(level);
+            if (level > bar) {
                 loudRun += 1;
                 if (loudRun * frameMs >= START_MS) {
                     speaking = true;
@@ -116,7 +131,7 @@ final class SpeechDetector {
 
         speechFrames += 1;
         // Noise that is not a voice counts as a pause, so a sentence ends in a loud car.
-        if (level > threshold() * KEEP_RATIO && !Boolean.FALSE.equals(voiced)) quietRun = 0;
+        if (level > barFor(voiced) * KEEP_RATIO && !Boolean.FALSE.equals(voiced)) quietRun = 0;
         else quietRun += 1;
 
         if (speechFrames * frameMs >= MAX_SPEECH_MS) {

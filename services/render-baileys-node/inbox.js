@@ -27,9 +27,23 @@ const MEDIA_LABELS = {
   pollCreationMessageV3: 'تصويت',
 };
 
+// Disappearing-message chats, view-once media and edits wrap the real content;
+// without unwrapping, every message in such a chat was dropped as "noise".
+const WRAPPERS = ['ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension', 'documentWithCaptionMessage', 'editedMessage'];
+
+export function unwrapMessage(content) {
+  let m = content;
+  for (let depth = 0; m && depth < 5; depth++) {
+    const wrapper = WRAPPERS.find((key) => m[key]?.message);
+    if (!wrapper) break;
+    m = m[wrapper].message;
+  }
+  return m || null;
+}
+
 /** Text of a message, or a label for media ("صورة: caption"). Null for protocol noise. */
 export function describeMessage(message) {
-  const m = message?.message;
+  const m = unwrapMessage(message?.message);
   if (!m) return null;
   const text = m.conversation || m.extendedTextMessage?.text || '';
   if (text.trim()) return text.trim().slice(0, MAX_TEXT);

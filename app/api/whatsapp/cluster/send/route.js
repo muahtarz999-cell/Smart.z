@@ -3,24 +3,21 @@ import { customerAccessResponse, requireCustomerRegistered } from '../../../../.
 import { callNode, getClusterNode, getUserAssignment } from '../../../../../lib/whatsapp-cluster';
 import { MAX_RECIPIENTS_WITHOUT_MANUAL_CONFIRMATION } from '../../../../../lib/whatsapp-commands';
 import { synthesizeWithFallback } from '../../../../../lib/cloud-tts';
-import { bytesToBase64, textForSpeech } from '../../../../../lib/drive-turn';
-import { splitForSpeech } from '../../../../../lib/text-chunks';
+import { voiceReply } from '../../../../../lib/drive-turn';
 
-/** The message read by the cloud voice: [{ data(base64) }] for the node to join into one voice note, or null. */
+/**
+ * The message read by the cloud voice: [{ data(base64) }] for the node to join
+ * into one voice note, or null. Same safeguards as driving replies: one retry
+ * per piece, and every piece in the voice that read the first one.
+ */
 async function voiceNoteParts(text, voice = {}) {
-  const chunks = splitForSpeech(textForSpeech(text), 180);
-  if (!chunks.length) return null;
-  const options = {
-    provider: typeof voice?.provider === 'string' && voice.provider !== 'auto' ? voice.provider : undefined,
-    voices: voice?.voices && typeof voice.voices === 'object' ? voice.voices : {},
-  };
-  const parts = [];
-  for (const chunk of chunks) {
-    const result = await synthesizeWithFallback(chunk, options).catch(() => null);
-    if (!result?.audio) return null;
-    parts.push({ data: bytesToBase64(result.audio) });
-  }
-  return parts;
+  const synthesize = (chunk, options = {}) => synthesizeWithFallback(chunk, {
+    provider: typeof options.provider === 'string' && options.provider !== 'auto' ? options.provider : undefined,
+    voices: options.voices && typeof options.voices === 'object' ? options.voices : {},
+    strict: options.strict === true,
+  });
+  const { audio } = await voiceReply(text, voice && typeof voice === 'object' ? voice : {}, synthesize);
+  return audio.length ? audio.map((part) => ({ data: part.data })) : null;
 }
 
 export const runtime = 'edge';
@@ -65,7 +62,13 @@ export async function POST(request) {
         body: { remoteJid: recipient.jid, text, document, voice: voice || undefined },
         timeoutMs: 45_000,
       });
-      results.push({ jid: recipient.jid, ok: result.ok, error: result.ok ? undefined : result.data?.error });
+      results.push({
+        jid: recipient.jid,
+        ok: result.ok,
+        error: result.ok ? undefined : result.data?.error,
+        voice: result.data?.voice === true,
+        voiceError: result.data?.voiceError,
+      });
     } catch {
       results.push({ jid: recipient.jid, ok: false, error: 'NODE_UNREACHABLE' });
     }
@@ -73,6 +76,8 @@ export async function POST(request) {
   const sent = results.filter((r) => r.ok).length;
   return json({
     success: sent === results.length, sent, failed: results.length - sent, results,
-    voiceFallback: body.asVoice === true && !voice, // asked for voice, sent as text
+    // Asked for voice, sent as text: no cloud voice answered (tts), or the node could not make the note (node).
+    voiceFallback: body.asVoice === true && (!voice || results.some((r) => r.ok && !r.voice)),
+    voiceError: body.asVoice === true ? (!voice ? 'tts' : results.find((r) => r.ok && !r.voice)?.voiceError || null) : null,
   }, sent ? 200 : 502);
 }

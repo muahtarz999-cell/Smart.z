@@ -24,7 +24,7 @@ import pino from 'pino';
 import QRCode from 'qrcode';
 import { clearSupabaseAuthState, useSupabaseAuthState } from './supabase-auth-state.js';
 import { ContactBook } from './contacts.js';
-import { describeMessage, Inbox, MAX_INBOX_AGE_MS } from './inbox.js';
+import { describeMessage, Inbox, MAX_INBOX_AGE_MS, unwrapMessage } from './inbox.js';
 import { toVoiceNote } from './voice-note.js';
 import { SentCache } from './sent-cache.js';
 
@@ -262,7 +262,7 @@ function onStartError(error) {
 
 // ---------------------------------------------------------------- incoming messages
 function extractText(message) {
-  const m = message.message;
+  const m = unwrapMessage(message.message);
   if (!m) return null;
   return m.conversation
     || m.extendedTextMessage?.text
@@ -337,7 +337,7 @@ async function handleIncoming(message) {
 
   if (message.pushName) contacts.upsert([{ id: jid, notify: message.pushName }]);
 
-  const audioMessage = message.message?.audioMessage;
+  const audioMessage = unwrapMessage(message.message)?.audioMessage;
   const text = audioMessage ? null : extractText(message)?.trim();
   if (!audioMessage && !text) return;
   if (!underReplyLimit()) return;
@@ -479,7 +479,9 @@ app.get('/api/connect', async (req, res) => {
 });
 
 // The phone collects waiting messages, stores them locally, then confirms.
-app.get('/api/inbox', (_req, res) => res.json({ success: true, items: inbox.list() }));
+// connected=false right after a cold start: the socket is still catching up,
+// so an empty list does not mean "no messages".
+app.get('/api/inbox', (_req, res) => res.json({ success: true, connected: node.status === 'CONNECTED', items: inbox.list() }));
 
 app.post('/api/inbox/ack', (req, res) => {
   const removed = inbox.ack(req.body?.ids);
@@ -523,6 +525,7 @@ app.post('/api/send', async (req, res) => {
   if (!node.sock || node.status !== 'CONNECTED') {
     return res.status(503).json({ success: false, error: 'NOT_CONNECTED' });
   }
+  let voiceError = null;
   try {
     if (voiceParts.length && !hasDocument) {
       // A voice message the user asked for: the cloud voice reading the text, as a real voice note.
@@ -537,6 +540,7 @@ app.post('/api/send', async (req, res) => {
         return res.json({ success: true, voice: true, messageId: sentVoice?.key?.id || null });
       } catch (error) {
         logger.error({ err: error }, 'voice send failed; sending text');
+        voiceError = String(error?.message || 'VOICE_FAILED').slice(0, 160);
       }
     }
     await node.sock.sendPresenceUpdate('composing', remoteJid).catch(() => {});
@@ -550,7 +554,7 @@ app.post('/api/send', async (req, res) => {
       : await node.sock.sendMessage(remoteJid, { text: text.slice(0, 4096) });
     sentMessages.remember(sent, hasDocument ? 'document' : 'text');
     await node.sock.sendPresenceUpdate('paused', remoteJid).catch(() => {});
-    return res.json({ success: true, messageId: sent?.key?.id || null });
+    return res.json({ success: true, voice: false, voiceError, messageId: sent?.key?.id || null });
   } catch (error) {
     logger.error({ err: error }, 'send failed');
     return res.status(500).json({ success: false, error: error?.message || 'SEND_FAILED' });
