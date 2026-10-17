@@ -47,7 +47,10 @@ export default function DrivingSettings({ active = false, onStart, onStop }) {
         <h3 className="text-sm font-medium text-text-primary">كيف يعمل</h3>
         <p>١. فعّل الخيار أدناه مرة واحدة.</p>
         <p>٢. اضغط زر التحدث وقل <b className="text-text-primary">«وضع القيادة»</b>، أو اضغط «ابدأ الآن».</p>
-        <p>٣. بعدها تكلّم متى شئت دون ضغط: يسمعك، يرد بصوته، ثم يعود للاستماع. الميكروفون يُغلق أثناء كلامه حتى لا يرد على نفسه.</p>
+        <p>
+          ٣. بعدها تكلّم دون ضغط: يسمعك، يرد بصوته، ثم يعود للاستماع. الميكروفون يُغلق أثناء كلامه حتى لا يرد على نفسه.
+          {settings.callByName && <> ابدأ كل سؤال باسمه <b className="text-text-primary">«سمارت»</b>، مثل «سمارت، اقرأ رسائلي»، ويمكنك الرد عليه بعد كلامه مباشرة دون الاسم.</>}
+        </p>
         <p>٤. لإيقاف كلامه المس الشاشة{native ? ' أو الفقاعة، أو زر التشغيل في السماعة أو مقود السيارة' : ''}.</p>
         <p>٥. للإنهاء قل <b className="text-text-primary">«وضع القيادة انتهى»</b> أو «وصلت»، أو اضغط «إنهاء». وينتهي وحده بعد {settings.idleMinutes} دقائق بلا كلام.</p>
         <p>الإرسال لشخص أو لمجموعة بالاسم يتم فوراً مع مهلة التراجع. الإرسال لأكثر من 5 أشخاص يُحفظ حتى تؤكده بنفسك حين تتوقف.</p>
@@ -62,6 +65,16 @@ export default function DrivingSettings({ active = false, onStart, onStop }) {
         <span className="text-sm text-text-primary">السماح بوضع القيادة</span>
         <Switch label="السماح بوضع القيادة" checked={settings.enabled} onChange={(enabled) => update({ enabled })} />
       </label>
+
+      <div className="space-y-1.5">
+        <label className="flex items-center justify-between gap-3">
+          <span className="text-sm text-text-primary">لا يرد إلا إذا ناديته «سمارت»</span>
+          <Switch label="لا يرد إلا إذا ناديته سمارت" checked={settings.callByName} onChange={(callByName) => update({ callByName })} />
+        </label>
+        <p className="text-xs leading-5 text-text-secondary">
+          يتجاهل أحاديث الركاب. أوامر الإنهاء والتراجع عن الإرسال تعمل دائمًا دون الاسم.
+        </p>
+      </div>
 
       <label className="block space-y-1.5">
         <span className="text-xs text-text-secondary">الإيقاف التلقائي بعد صمت</span>

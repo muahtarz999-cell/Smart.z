@@ -49,7 +49,7 @@ import SendSettings from '../components/SendSettings';
 import { cancelPendingSend, configureSendActions, getActionSettings, isCancelCommand, queueSend } from '../lib/send-actions';
 import DrivingSettings from '../components/DrivingSettings';
 import DrivingScreen from '../components/DrivingScreen';
-import { DrivingController } from '../lib/driving-mode';
+import { DrivingController, getDrivingSettings } from '../lib/driving-mode';
 import { DRIVING_MESSAGES, isDrivingStartCommand, isDrivingStopCommand } from '../lib/driving-commands';
 import { addMessage, getRecentMessages } from '../lib/conversation';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
@@ -1060,6 +1060,7 @@ export default function Home() {
           error={audioPlaybackError}
           onInterrupt={() => drivingRef.current?.interrupt()}
           onStop={() => { setReply(DRIVING_MESSAGES.stopped); void drivingRef.current?.stop('user'); }}
+          callByName={getDrivingSettings().callByName}
         />
       )}
       <div

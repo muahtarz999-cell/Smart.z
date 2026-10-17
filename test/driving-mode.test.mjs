@@ -175,3 +175,62 @@ test('drive turn: reply chunks are voiced at most two at a time, in order', asyn
   assert.match(decoded[0], /رقم 1/);
   assert.match(decoded.at(-1), /رقم 6/);
 });
+
+test('call by name: passengers are ignored; the driver calls «سمارت»; stop, cancel and follow-ups need no name', async () => {
+  const byName = { callByName: true };
+  // Passengers talking: no assistant call, no voice, nothing on screen.
+  let { deps, calls } = driveDeps({ transcript: 'وش رأيكم نتغدى في المطعم اللي على الطريق' });
+  let result = await runDriveTurn({ audio: {}, context: byName }, deps);
+  assert.equal(result.kind, 'ignored');
+  assert.equal(result.reason, 'not_called');
+  assert.equal(calls.assistant.length, 0);
+  assert.equal(calls.tts.length, 0);
+
+  // The driver calls the assistant: the name is removed before it is asked.
+  ({ deps, calls } = driveDeps({ transcript: 'سمارت، كم الساعة؟' }));
+  result = await runDriveTurn({ audio: {}, context: byName }, deps);
+  assert.equal(result.kind, 'reply');
+  assert.equal(calls.assistant[0].text, 'كم الساعة؟');
+
+  // Whisper spelling variants of the name still count.
+  ({ deps, calls } = driveDeps({ transcript: 'يا سمارت اقرأ رسائلي' }));
+  await runDriveTurn({ audio: {}, context: byName }, deps);
+  assert.equal(calls.assistant[0].text, 'اقرأ رسائلي');
+
+  // Just the name: a short prompt, the assistant is not asked anything.
+  ({ deps, calls } = driveDeps({ transcript: 'سمارت' }));
+  result = await runDriveTurn({ audio: {}, context: byName }, deps);
+  assert.equal(result.reply, 'نعم، تفضّل.');
+  assert.equal(calls.assistant.length, 0);
+
+  // Right after a reply the driver answers without the name.
+  ({ deps, calls } = driveDeps({ transcript: 'لأحمد' }));
+  result = await runDriveTurn({ audio: {}, context: { ...byName, followUp: true } }, deps);
+  assert.equal(result.kind, 'reply');
+  assert.equal(calls.assistant[0].text, 'لأحمد');
+
+  // Stopping and cancelling always work without the name.
+  ({ deps } = driveDeps({ transcript: 'وضع القيادة انتهى' }));
+  assert.equal((await runDriveTurn({ audio: {}, context: byName }, deps)).kind, 'stop');
+  ({ deps } = driveDeps({ transcript: 'تراجع' }));
+  assert.equal((await runDriveTurn({ audio: {}, context: { ...byName, pendingSend: true } }, deps)).kind, 'cancel_send');
+
+  // Off: every sentence is answered, as before.
+  ({ deps, calls } = driveDeps({ transcript: 'كم الساعة' }));
+  assert.equal((await runDriveTurn({ audio: {}, context: {} }, deps)).kind, 'reply');
+});
+
+test('speech detector with a voice classifier: loud noise never starts a sentence, and noise ends one', () => {
+  const runVoiced = (detector, frames) => frames.map(([rms, voiced]) => detector.push(rms, voiced)).filter(Boolean);
+  const frames = (rms, voiced, count) => Array(count).fill([rms, voiced]);
+  // A fan at 0.2 (well above any bar) that the classifier says is not a voice: nothing starts.
+  let detector = createSpeechDetector();
+  assert.deepEqual(runVoiced(detector, [...frames(0.01, false, 5), ...frames(0.2, false, 40)]), []);
+  // A voice over that same fan is heard once the classifier says "voice".
+  assert.deepEqual(runVoiced(detector, [...frames(0.3, true, 15), ...frames(0.2, false, 12)]), ['start', 'end']);
+  // While speaking, loud non-voice frames count as a pause: the sentence ends instead of running 30 s.
+  detector = createSpeechDetector();
+  assert.deepEqual(runVoiced(detector, [...frames(0.01, undefined, 5), ...frames(0.1, true, 10), ...frames(0.1, false, 10)]), ['start', 'end']);
+  // Without a classifier (undefined) loudness alone decides, as before.
+  assert.deepEqual(runVoiced(createSpeechDetector(), [...frames(0.005, undefined, 20), ...frames(0.12, undefined, 15), ...frames(0.004, undefined, 12)]), ['start', 'end']);
+});

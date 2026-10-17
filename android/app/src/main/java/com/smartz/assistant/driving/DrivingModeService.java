@@ -67,6 +67,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
     private Handler main;
     private ReplyPlayer player;
     private MicListener mic;
+    private VoiceActivity voiceActivity;
     private ScheduledExecutorService scheduler;
     private BubbleOverlay bubble;
     private AudioManager audioManager;
@@ -88,6 +89,11 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
     private boolean confirmEverySend = false;
     private boolean deviceFallback = true;
     private boolean bubbleEnabled = true;
+    /** Answer only sentences that call the assistant by name (passengers talking in the car). */
+    private boolean callByName = false;
+    /** After a reply the driver may answer without the name for this long (same as FOLLOW_UP_MS in the app). */
+    private static final long FOLLOW_UP_MS = 12_000;
+    private volatile long lastReplyEndedAt = 0;
     private ScheduledFuture<?> pendingSend;
     private JSONObject pendingAction;
     private long lastLevelEmit = 0;
@@ -152,7 +158,8 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         instance = this;
         main = new Handler(Looper.getMainLooper());
         player = new ReplyPlayer(this);
-        mic = new MicListener();
+        voiceActivity = new VoiceActivity(this); // Silero VAD: a voice vs. steady car noise
+        mic = new MicListener(voiceActivity);
         scheduler = Executors.newSingleThreadScheduledExecutor();
         bubble = new BubbleOverlay(this, this);
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
@@ -200,6 +207,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         running = false;
         mic.abort();
         player.release();
+        if (voiceActivity != null) voiceActivity.close();
         scheduler.shutdown();
         bubble.hide();
         releaseFocus();
@@ -228,6 +236,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         JSONObject voice = next.optJSONObject("voice");
         deviceFallback = voice == null || voice.optBoolean("deviceFallback", true);
         bubbleEnabled = next.optBoolean("bubble", true);
+        callByName = next.optBoolean("callByName", false);
         failures = 0;
     }
 
@@ -323,6 +332,7 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         DriveEvents.emit("turn", turn, true);
 
         speakReply(audio, reply);
+        lastReplyEndedAt = SystemClock.elapsedRealtime();
 
         if ("stop".equals(kind)) {
             stopDriving("user", false);
@@ -349,6 +359,8 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         put(context, "preferences", config.opt("preferences"));
         put(context, "voice", config.opt("voice"));
         put(context, "confirmEverySend", confirmEverySend);
+        put(context, "callByName", callByName);
+        put(context, "followUp", lastReplyEndedAt > 0 && SystemClock.elapsedRealtime() - lastReplyEndedAt < FOLLOW_UP_MS);
         synchronized (this) {
             put(context, "pendingSend", pendingAction != null);
         }

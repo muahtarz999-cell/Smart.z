@@ -71,6 +71,14 @@ final class SpeechDetector {
     }
 
     int push(double rms) {
+        return push(rms, null);
+    }
+
+    /**
+     * voiced: Silero VAD's verdict for this frame (TRUE a human voice, FALSE not a
+     * voice), or null when no classifier is available and loudness alone decides.
+     */
+    int push(double rms, Boolean voiced) {
         double level = Double.isNaN(rms) || rms < 0 ? 0 : rms;
         if (calibrationLeft > 0) {
             floor = floor < 0 ? level : Math.min(floor, level);
@@ -78,6 +86,12 @@ final class SpeechDetector {
             return NONE;
         }
         if (!speaking) {
+            if (Boolean.FALSE.equals(voiced)) {
+                // Loud but not a voice: it is the room, however loud, and never starts a sentence.
+                floor += (level - floor) * (level < floor ? FLOOR_FALL : FLOOR_ADAPT);
+                loudRun = 0;
+                return NONE;
+            }
             adaptFloor(level);
             if (level > threshold()) {
                 loudRun += 1;
@@ -94,7 +108,8 @@ final class SpeechDetector {
         }
 
         speechFrames += 1;
-        if (level > threshold() * KEEP_RATIO) quietRun = 0;
+        // Noise that is not a voice counts as a pause, so a sentence ends in a loud car.
+        if (level > threshold() * KEEP_RATIO && !Boolean.FALSE.equals(voiced)) quietRun = 0;
         else quietRun += 1;
 
         if (speechFrames * frameMs >= MAX_SPEECH_MS) {
