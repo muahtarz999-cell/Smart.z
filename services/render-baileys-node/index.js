@@ -26,6 +26,7 @@ import { clearSupabaseAuthState, useSupabaseAuthState } from './supabase-auth-st
 import { ContactBook } from './contacts.js';
 import { describeMessage, Inbox, MAX_INBOX_AGE_MS } from './inbox.js';
 import { toVoiceNote } from './voice-note.js';
+import { SentCache } from './sent-cache.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const NODE_ID = Number(process.env.CLUSTER_NODE_ID || 0);
@@ -58,6 +59,13 @@ const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
 
 const contacts = new ContactBook({ supabase, nodeId: NODE_ID, dir: process.cwd() });
 const inbox = new Inbox(); // memory only: waits for the phone to collect, then dropped
+const sentMessages = new SentCache(); // answers recipients' retry requests (see sent-cache.js)
+
+// Safe identifiers for logs: message id and the last 4 digits only, never content.
+function maskJid(jid) {
+  const [user = '', server = ''] = String(jid || '').split('@');
+  return `…${user.split(':')[0].slice(-4)}@${server}`;
+}
 
 // ---------------------------------------------------------------- state
 const node = {
@@ -89,6 +97,7 @@ async function clearSession() {
   await fs.rm(AUTH_DIR, { recursive: true, force: true });
   await contacts.clear();
   inbox.clear();
+  sentMessages.clear();
   node.registered = false;
   node.phone = null;
   node.qr = null;
@@ -151,11 +160,18 @@ async function startSocket() {
       browser: Browsers.macOS('Chrome'),
       markOnlineOnConnect: false,
       syncFullHistory: false,
+      // A recipient that cannot decrypt asks for the message again; without this
+      // it stays on "Waiting for this message" forever.
+      getMessage: async (key) => {
+        const entry = sentMessages.get(key?.id);
+        console.log(`[node ${NODE_ID}] retry requested id=${key?.id} to=${maskJid(key?.remoteJid)} found=${Boolean(entry)} kind=${entry?.kind || '-'}`);
+        return entry?.message;
+      },
     });
     node.sock = sock;
 
     sock.ev.on('creds.update', async () => {
-      try { await saveCreds(); } catch (error) { logger.error({ error }, 'saveCreds failed'); }
+      try { await saveCreds(); } catch (error) { logger.error({ err: error }, 'saveCreds failed'); }
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -192,7 +208,7 @@ async function startSocket() {
         if (code === DisconnectReason.loggedOut) {
           // Unlinked from the phone: wipe the dead credentials so a new QR can be issued.
           console.log(`[node ${NODE_ID}] logged out from the phone; clearing session`);
-          await clearSession().catch((error) => logger.error({ error }, 'clearSession failed'));
+          await clearSession().catch((error) => logger.error({ err: error }, 'clearSession failed'));
           node.status = 'IDLE';
           if (hasDemand()) setTimeout(() => startSocket().catch(onStartError), RECONNECT_DELAY_MS);
           return;
@@ -202,6 +218,16 @@ async function startSocket() {
         const keepAlive = node.registered || hasDemand();
         node.status = keepAlive ? 'CONNECTING' : 'IDLE';
         if (keepAlive) setTimeout(() => startSocket().catch(onStartError), RECONNECT_DELAY_MS);
+      }
+    });
+
+    // Delivery evidence for what we sent: 2 server ack, 3 delivered, 4 read, 5 played.
+    sock.ev.on('messages.update', (updates) => {
+      for (const { key, update } of updates || []) {
+        const kind = key?.fromMe ? sentMessages.kindOf(key.id) : undefined;
+        if (kind && update?.status !== undefined) {
+          console.log(`[node ${NODE_ID}] status id=${key.id} kind=${kind} to=${maskJid(key.remoteJid)} status=${update.status}`);
+        }
       }
     });
 
@@ -215,7 +241,7 @@ async function startSocket() {
       for (const message of messages) recordInbox(message);
       if (type !== 'notify') return;
       for (const message of messages) {
-        await handleIncoming(message).catch((error) => logger.error({ error }, 'incoming message failed'));
+        await handleIncoming(message).catch((error) => logger.error({ err: error }, 'incoming message failed'));
       }
     });
   })();
@@ -231,7 +257,7 @@ function onStartError(error) {
   node.status = 'ERROR';
   node.lastError = error?.message || String(error);
   closeSocket();
-  logger.error({ error }, 'socket start failed');
+  logger.error({ err: error }, 'socket start failed');
 }
 
 // ---------------------------------------------------------------- incoming messages
@@ -296,7 +322,7 @@ function recordInbox(message) {
       sentAt,
     });
   } catch (error) {
-    logger.error({ error }, 'inbox record failed');
+    logger.error({ err: error }, 'inbox record failed');
   }
 }
 
@@ -338,7 +364,11 @@ async function handleIncoming(message) {
     signal: AbortSignal.timeout(45_000),
   });
   const data = await response.json().catch(() => null);
-  if (!response.ok || !data?.success || !data.reply) return; // auto-reply off, not allowed, or nothing to say
+  if (!response.ok || !data?.success || !data.reply) {
+    // auto-reply off, not allowed, nothing to say, or the app failed: say which, without content.
+    if (!response.ok || !data?.success) logger.warn({ status: response.status, code: data?.error || null }, 'app gave no reply');
+    return;
+  }
 
   const current = node.sock;
   if (!current || node.status !== 'CONNECTED') return;
@@ -349,17 +379,20 @@ async function handleIncoming(message) {
     try {
       await current.sendPresenceUpdate('recording', jid).catch(() => {});
       const ogg = await toVoiceNote(data.voice.map((part) => Buffer.from(part.data, 'base64')));
-      await current.sendMessage(jid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+      console.log(`[node ${NODE_ID}] voice converted parts=${data.voice.length} bytes=${ogg.length}`);
+      const sentVoice = await current.sendMessage(jid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+      sentMessages.remember(sentVoice, 'voice');
+      console.log(`[node ${NODE_ID}] voice handed to WhatsApp id=${sentVoice?.key?.id} to=${maskJid(jid)}`);
       await current.sendPresenceUpdate('paused', jid).catch(() => {});
       return;
     } catch (error) {
-      logger.error({ error }, 'voice reply failed; sending text');
+      logger.error({ err: error }, 'voice reply failed; sending text');
     }
   }
 
   await current.sendPresenceUpdate('composing', jid).catch(() => {});
   await new Promise((resolve) => setTimeout(resolve, Math.min(4000, 800 + data.reply.length * 25))); // human pace
-  await current.sendMessage(jid, { text: data.reply });
+  sentMessages.remember(await current.sendMessage(jid, { text: data.reply }), 'text');
   await current.sendPresenceUpdate('paused', jid).catch(() => {});
 }
 
@@ -434,7 +467,7 @@ app.get('/api/connect', async (req, res) => {
 
     return res.status(400).json({ success: false, error: 'طريقة الربط غير مدعومة.' });
   } catch (error) {
-    logger.error({ error }, 'connect failed');
+    logger.error({ err: error }, 'connect failed');
     const notReady = error?.message === 'SOCKET_NOT_READY';
     return res.status(notReady ? 202 : 500).json({
       success: notReady,
@@ -467,7 +500,7 @@ app.post('/api/reset', async (_req, res) => {
     node.lastDemandAt = 0;
     return res.json({ success: true, ...publicStatus() });
   } catch (error) {
-    logger.error({ error }, 'reset failed');
+    logger.error({ err: error }, 'reset failed');
     return res.status(500).json({ success: false, error: 'RESET_FAILED' });
   }
 });
@@ -496,11 +529,14 @@ app.post('/api/send', async (req, res) => {
       try {
         await node.sock.sendPresenceUpdate('recording', remoteJid).catch(() => {});
         const ogg = await toVoiceNote(voiceParts.map((part) => Buffer.from(part.data, 'base64')));
+        console.log(`[node ${NODE_ID}] voice converted parts=${voiceParts.length} bytes=${ogg.length}`);
         const sentVoice = await node.sock.sendMessage(remoteJid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+        sentMessages.remember(sentVoice, 'voice');
+        console.log(`[node ${NODE_ID}] voice handed to WhatsApp id=${sentVoice?.key?.id} to=${maskJid(remoteJid)}`);
         await node.sock.sendPresenceUpdate('paused', remoteJid).catch(() => {});
         return res.json({ success: true, voice: true, messageId: sentVoice?.key?.id || null });
       } catch (error) {
-        logger.error({ error }, 'voice send failed; sending text');
+        logger.error({ err: error }, 'voice send failed; sending text');
       }
     }
     await node.sock.sendPresenceUpdate('composing', remoteJid).catch(() => {});
@@ -512,9 +548,11 @@ app.post('/api/send', async (req, res) => {
         caption: hasText ? text.slice(0, 1024) : undefined,
       })
       : await node.sock.sendMessage(remoteJid, { text: text.slice(0, 4096) });
+    sentMessages.remember(sent, hasDocument ? 'document' : 'text');
     await node.sock.sendPresenceUpdate('paused', remoteJid).catch(() => {});
     return res.json({ success: true, messageId: sent?.key?.id || null });
   } catch (error) {
+    logger.error({ err: error }, 'send failed');
     return res.status(500).json({ success: false, error: error?.message || 'SEND_FAILED' });
   }
 });

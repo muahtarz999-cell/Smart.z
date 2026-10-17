@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check inbox.js && node --check supabase-auth-state.js && node --check contacts.js && node --check voice-note.js"
+    "check": "node --check index.js && node --check inbox.js && node --check supabase-auth-state.js && node --check contacts.js && node --check voice-note.js && node --check sent-cache.js",
+    "test": "node --test checks/*.check.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
