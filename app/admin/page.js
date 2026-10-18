@@ -28,6 +28,7 @@ const DONE = {
   create: 'أُضيف العميل. أعطه البريد وكلمة المرور.',
   suspend: 'أُوقف العميل.',
   activate: 'فُعّل العميل.',
+  set_computer_pairing: null,
   reset_device: 'فُك ربط الجهاز.',
   set_password: 'تغيّرت كلمة المرور.',
   disconnect_whatsapp: 'فُصل واتساب.',
@@ -133,7 +134,9 @@ export default function AdminPage() {
     setNotice('');
     try {
       const result = await call({ method: 'POST', body: JSON.stringify({ action, ...payload }) });
-      let message = DONE[action];
+      let message = action === 'set_computer_pairing'
+        ? (result.allowComputerPairing ? 'سُمِح لهذا العميل بإنشاء اقتران كمبيوتر جديد.' : 'مُنِع هذا العميل من إنشاء اقتران كمبيوتر جديد.')
+        : DONE[action];
       if (result.whatsapp?.released && result.whatsapp.nodeWiped === false) {
         message += ' تنبيه: تعذر مسح جلسة الخادم الآن؛ ستُمسح عند الحجز التالي.';
       }
@@ -228,11 +231,17 @@ export default function AdminPage() {
                     {customer.active ? 'فعّال' : 'موقوف'}{customer.isSelf ? ' · أنت' : ''}
                   </span>
                 </div>
-                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-text-secondary sm:grid-cols-4">
+                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-text-secondary sm:grid-cols-5">
                   <div><dt className="inline">أُضيف: </dt><dd className="inline">{formatDate(customer.createdAt)}</dd></div>
                   <div><dt className="inline">آخر دخول: </dt><dd className="inline">{formatDate(customer.lastSignInAt)}</dd></div>
                   <div><dt className="inline">الجهاز: </dt><dd className="inline">{customer.deviceBound ? `مرتبط منذ ${formatDate(customer.deviceBoundAt)}` : 'غير مرتبط'}</dd></div>
                   <div><dt className="inline">واتساب: </dt><dd className="inline">{customer.whatsappNode ? `خادم ${customer.whatsappNode} (${customer.whatsappStatus})` : '—'}</dd></div>
+                  <div>
+                    <dt className="inline">اقتران الكمبيوتر: </dt>
+                    <dd className={customer.allowComputerPairing ? 'inline text-emerald-300' : 'inline text-text-secondary'}>
+                      {customer.allowComputerPairing ? 'مسموح' : 'ممنوع'}
+                    </dd>
+                  </div>
                 </dl>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {customer.active
@@ -241,6 +250,14 @@ export default function AdminPage() {
                   {customer.deviceBound && (
                     <button type="button" className={plain} disabled={busy} onClick={() => run('reset_device', { userId: customer.id })}>فك ربط الجهاز</button>
                   )}
+                  <button type="button" className={customer.allowComputerPairing ? danger : plain} disabled={busy}
+                    aria-pressed={customer.allowComputerPairing}
+                    onClick={() => run('set_computer_pairing', {
+                      userId: customer.id,
+                      allowComputerPairing: !customer.allowComputerPairing,
+                    })}>
+                    {customer.allowComputerPairing ? 'إيقاف اقتران الكمبيوتر' : 'السماح باقتران كمبيوتر'}
+                  </button>
                   <button type="button" className={plain} disabled={busy}
                     onClick={() => { setPasswordFor(passwordFor === customer.id ? null : customer.id); setPasswordValue(''); }}>
                     كلمة مرور جديدة

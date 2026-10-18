@@ -103,6 +103,20 @@ export async function POST(request) {
       return json({ success: true });
     }
 
+    if (action === 'set_computer_pairing') {
+      const { data, error } = await service
+        .from('customer_registry')
+        .update({ allow_computer_pairing: checked.allowComputerPairing })
+        .eq('user_id', userId)
+        .select('user_id')
+        .maybeSingle();
+      if (error) return failed('set_computer_pairing', error);
+      if (!data) {
+        return json({ error: true, code: 'CUSTOMER_NOT_FOUND', message: 'سجل العميل غير موجود.' }, 404);
+      }
+      return json({ success: true, allowComputerPairing: checked.allowComputerPairing });
+    }
+
     if (action === 'reset_device') {
       const { error } = await service
         .from('customer_registry')

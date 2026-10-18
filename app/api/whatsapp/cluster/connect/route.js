@@ -10,6 +10,13 @@ export async function GET(request) {
 
   const { searchParams } = new URL(request.url);
   const method = searchParams.get('method') === 'pairing_code' ? 'pairing_code' : 'qr';
+  if (method === 'qr' && access.customer.allow_computer_pairing !== true) {
+    return json({
+      success: false,
+      code: 'COMPUTER_PAIRING_DISABLED',
+      error: 'اقتران الكمبيوتر غير مسموح لهذا الحساب. تواصل مع الإدارة.',
+    }, 403);
+  }
   const phoneNumber = (searchParams.get('phoneNumber') || '').replace(/\D/g, '');
   if (method === 'pairing_code' && (phoneNumber.length < 9 || phoneNumber.length > 15)) {
     return json({ success: false, error: 'اكتب رقم الهاتف مع رمز الدولة، مثل 9665xxxxxxxx.' }, 400);
