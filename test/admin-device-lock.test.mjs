@@ -98,6 +98,19 @@ test('the admin cannot suspend or delete themselves, but can reset their own dev
   assert.equal(validateAdminRequest({ action: 'set_password', userId: A, password: 'short' }, ADMIN).ok, false);
 });
 
+test('computer pairing permission requires a strict boolean and rejects extra fields', () => {
+  assert.deepEqual(
+    validateAdminRequest({ action: 'set_computer_pairing', userId: A, allowComputerPairing: true }, ADMIN),
+    { ok: true, action: 'set_computer_pairing', userId: A, allowComputerPairing: true },
+  );
+  assert.equal(validateAdminRequest({ action: 'set_computer_pairing', userId: A, allowComputerPairing: false }, ADMIN).ok, true);
+  assert.equal(validateAdminRequest({ action: 'set_computer_pairing', userId: A, allowComputerPairing: 'true' }, ADMIN).ok, false);
+  assert.equal(validateAdminRequest({ action: 'set_computer_pairing', userId: A }, ADMIN).ok, false);
+  assert.equal(validateAdminRequest({
+    action: 'set_computer_pairing', userId: A, allowComputerPairing: true, is_active: false,
+  }, ADMIN).ok, false);
+});
+
 test('the customer list merges account, registry and WhatsApp node, newest first', () => {
   const rows = mergeCustomerRows(
     [
@@ -108,7 +121,7 @@ test('the customer list merges account, registry and WhatsApp node, newest first
     [
       { user_id: A, is_active: true, device_id: B, device_bound_at: '2026-10-02T00:00:00Z' },
       { user_id: B, is_active: true, device_id: null },
-      { user_id: ADMIN, is_active: true },
+      { user_id: ADMIN, is_active: true, allow_computer_pairing: true },
     ],
     [{ user_id: A, node_id: 2, status: 'connected' }],
     ADMIN,
@@ -117,6 +130,8 @@ test('the customer list merges account, registry and WhatsApp node, newest first
   assert.equal(rows[0].active, false); // banned counts as suspended
   assert.equal(rows[1].deviceBound, true);
   assert.equal(rows[1].whatsappNode, 2);
+  assert.equal(rows[1].allowComputerPairing, false);
+  assert.equal(rows[2].allowComputerPairing, true);
   assert.equal(rows[2].isSelf, true);
 });
 
