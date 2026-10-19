@@ -3,7 +3,6 @@ import { NextResponse } from 'next/server';
 import { AssistantResponseError, generateAssistantReply } from '../../../../lib/assistant-response';
 import { transcribeAudio } from '../../../../lib/transcription';
 
-export const runtime = 'edge';
 
 const MAX_WEBHOOK_BYTES = 1_048_576;
 const DEDUPLICATION_WINDOW_MS = 5 * 60 * 1000;

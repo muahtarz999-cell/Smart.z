@@ -3,7 +3,6 @@ import { customerAccessResponse, requireCustomerRegistered } from '../../../../.
 import { getClusterNode, getUserAssignment } from '../../../../../lib/whatsapp-cluster';
 import { nodeContactSearch } from '../../../../../lib/whatsapp-commands';
 
-export const runtime = 'edge';
 
 // Contact lookup for sending a document from the app (?q=name&groups=1).
 export async function GET(request) {

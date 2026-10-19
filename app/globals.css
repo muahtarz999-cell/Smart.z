@@ -1,6 +1,19 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --color-base-bg: #0B0D12;
+  --color-base-panel: #12151C;
+  --color-base-card: #171B23;
+  --color-base-border: #2A2E38;
+  --color-gold-light: #F0D48A;
+  --color-gold: #C9A868;
+  --color-gold-dark: #8A6E3E;
+  --color-petrol-light: #4A7A78;
+  --color-petrol: #3E5C66;
+  --color-petrol-dark: #2E5C55;
+  --color-text-primary: #EDEDED;
+  --color-text-secondary: #8A8F99;
+}
 
 html,
 body {

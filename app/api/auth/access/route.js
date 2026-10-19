@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../lib/customer-access';
 
-export const runtime = 'edge';
 
 export async function GET(request) {
   const access = await requireCustomerRegistered(request);

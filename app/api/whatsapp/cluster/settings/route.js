@@ -1,7 +1,6 @@
 import { json } from '../../../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
 
-export const runtime = 'edge';
 
 const SCOPES = new Set(['all', 'allowlist']);
 const VOICE_MODES = new Set(['match', 'text', 'voice']);

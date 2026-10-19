@@ -2,7 +2,6 @@ import { json } from '../../../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
 import { allocateNode, callNode, ClusterError, CLUSTER_MESSAGES } from '../../../../../lib/whatsapp-cluster';
 
-export const runtime = 'edge';
 
 export async function GET(request) {
   const access = await requireCustomerRegistered(request);

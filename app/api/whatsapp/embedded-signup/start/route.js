@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
 import { createSignedSignupState } from '../../../../../lib/whatsapp-embedded-signup';
 
-export const runtime = 'edge';
 
 export async function POST(request) {
   const access = await requireCustomerRegistered(request);

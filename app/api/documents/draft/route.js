@@ -3,7 +3,6 @@ import { AssistantResponseError, completeWithSystem } from '../../../../lib/assi
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../lib/customer-access';
 import { getTemplate } from '../../../../lib/document-templates';
 
-export const runtime = 'edge';
 
 const FORMAT_RULES = `اكتب المستند بالعربية الفصحى بهذا التنسيق فقط:
 - السطر الأول: "# " ثم عنوان المستند.

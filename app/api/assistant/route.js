@@ -4,7 +4,6 @@ import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/
 import { linkedWhatsAppNode, nodeContactSearch, planSendCommand } from '../../../lib/whatsapp-commands';
 import { DRIVING_MESSAGES } from '../../../lib/driving-commands';
 
-export const runtime = 'edge';
 
 const MAX_MESSAGE_CHARACTERS = 4000;
 

@@ -8,7 +8,6 @@ import { linkedWhatsAppNode, nodeContactSearch, planSendCommand } from '../../..
 import { callNode } from '../../../../lib/whatsapp-cluster';
 import { buildInboxContext, isInboxQuestion, sanitizeInboxItems } from '../../../../lib/whatsapp-inbox';
 
-export const runtime = 'edge';
 
 const MAX_CONTEXT_CHARACTERS = 48_000; // history, profile, notes and the stored WhatsApp messages
 

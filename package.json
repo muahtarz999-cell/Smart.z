@@ -6,10 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "test": "node --test",
-    "pages:build": "npx @cloudflare/next-on-pages",
+    "worker:build": "opennextjs-cloudflare build",
+    "worker:preview": "opennextjs-cloudflare preview",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "start": "next start",
     "lint": "next lint",
-    "cap:assets": "capacitor-assets generate --ios --android --iconBackgroundColor #0B0D12 --iconBackgroundColorDark #0B0D12 --splashBackgroundColor #0B0D12 --splashBackgroundColorDark #0B0D12",
     "cap:sync": "cap sync",
     "cap:android": "cap open android",
     "cap:ios": "cap open ios"
@@ -22,20 +25,30 @@
     "@capacitor/ios": "^8.5.3",
     "@capacitor/local-notifications": "^8.3.1",
     "@supabase/supabase-js": "^2.45.0",
-    "next": "^15.2.0",
+    "@zxing/browser": "^0.2.1",
+    "@zxing/library": "0.23.0",
+    "next": "15.5.28",
     "pdfjs-dist": "^4.10.38",
+    "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@capacitor/assets": "^3.0.5",
     "@capacitor/cli": "^8.5.3",
-    "@cloudflare/next-on-pages": "^1.13.7",
-    "@cloudflare/workers-types": "^4.20240208.0",
-    "autoprefixer": "^10.4.19",
-    "postcss": "^8.4.40",
-    "tailwindcss": "^3.4.7",
-    "vercel": "^39.0.0",
-    "wrangler": "^3.100.0"
+    "@cloudflare/workers-types": "^5.20261018.1",
+    "@opennextjs/cloudflare": "^1.20.12",
+    "@tailwindcss/postcss": "^4.3.3",
+    "postcss": "^8.5.31",
+    "tailwindcss": "^4.3.3",
+    "wrangler": "^4.151.1"
+  },
+  "overrides": {
+    "@node-minify/core": {
+      "glob": "^10.5.0"
+    },
+    "postcss": "$postcss",
+    "xcode": {
+      "uuid": "^11.1.1"
+    }
   }
 }

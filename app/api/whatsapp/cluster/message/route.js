@@ -6,7 +6,6 @@ import { transcribeAudio } from '../../../../../lib/transcription';
 import { createServiceClient, getClusterNode } from '../../../../../lib/whatsapp-cluster';
 import { isReplyAllowed, wantsVoiceReply } from '../../../../../lib/whatsapp-reply-rules';
 
-export const runtime = 'edge';
 
 const MAX_VOICE_CHUNKS = 4;
 
