@@ -2,7 +2,6 @@ import { json } from '../../../lib/api-response';
 import { AssistantResponseError, learnProfile } from '../../../lib/assistant-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
 
-export const runtime = 'edge';
 
 /**
  * Stateless: the device sends its current profile and recent turns, gets the

@@ -12,7 +12,6 @@ import {
   releaseNodeForUser,
 } from '../../../../lib/whatsapp-cluster';
 
-export const runtime = 'edge';
 
 // Effectively permanent: Supabase Auth refuses sign-in and token refresh while banned.
 const SUSPEND_BAN = '876000h';

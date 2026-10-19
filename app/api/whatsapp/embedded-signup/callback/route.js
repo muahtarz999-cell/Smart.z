@@ -4,7 +4,6 @@ import {
   verifySignedSignupState,
 } from '../../../../../lib/whatsapp-embedded-signup';
 
-export const runtime = 'edge';
 
 function getMetaGraphApiVersion() {
   const version = process.env.META_GRAPH_API_VERSION;

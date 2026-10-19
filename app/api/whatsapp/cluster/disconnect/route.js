@@ -2,7 +2,6 @@ import { json } from '../../../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
 import { ClusterError, CLUSTER_MESSAGES, releaseNode } from '../../../../../lib/whatsapp-cluster';
 
-export const runtime = 'edge';
 
 export async function POST(request) {
   const access = await requireCustomerRegistered(request);

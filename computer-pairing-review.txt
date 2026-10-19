@@ -1,0 +1,358 @@
+=== CUSTOMER ACCESS ===
+import { createClient } from '@supabase/supabase-js';
+import { NextResponse } from 'next/server';
+import { decideDevice, DEVICE_MESSAGES, readDeviceHeader } from './device-lock';
+
+function failure(status, code, message) {
+  return { ok: false, status, code, message };
+}
+
+export async function authenticateRequest(request) {
+  const authorization = request.headers.get('authorization') || '';
+  const accessToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !anonKey) return failure(503, 'AUTH_UNAVAILABLE', 'خدمة تسجيل الدخول غير متاحة.');
+  if (!accessToken) return failure(401, 'AUTH_REQUIRED', 'سجّل الدخول للمتابعة.');
+
+  const client = createClient(url, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+  });
+  let data;
+  let error;
+  try {
+    ({ data, error } = await client.auth.getUser(accessToken));
+  } catch {
+    return failure(503, 'AUTH_UNAVAILABLE', 'تعذر التحقق من جلسة الدخول.');
+  }
+  if (error || !data.user?.id) return failure(401, 'AUTH_INVALID', 'جلسة الدخول غير صالحة.');
+
+  return { ok: true, client, user: data.user, accessToken };
+}
+
+export async function getCustomerContext(authenticated) {
+  if (!authenticated?.ok) return authenticated;
+
+  let customer;
+  let error;
+  const diagnosticContext = {
+    userId: authenticated.user?.id ?? null,
+    hasAuthorizationBearerToken: Boolean(authenticated.accessToken),
+    table: 'customer_registry',
+    query: 'select user_id where user_id = authenticated.user.id',
+  };
+  try {
+    ({ data: customer, error } = await authenticated.client
+      .from('customer_registry')
+      .select('*')
+      .eq('user_id', authenticated.user.id)
+      .maybeSingle());
+  } catch (exception) {
+    console.error('[Customer access] customer_registry query threw an exception', {
+      ...diagnosticContext,
+      exception: {
+        name: exception?.name ?? null,
+        message: exception?.message ?? String(exception),
+      },
+    });
+    return failure(503, 'CUSTOMER_REGISTRY_UNAVAILABLE', 'تعذر التحقق من حالة الحساب.');
+  }
+
+  if (error) {
+    console.error('[Customer access] customer_registry query failed', {
+      ...diagnosticContext,
+      error: {
+        code: error.code ?? null,
+        message: error.message ?? null,
+        details: error.details ?? null,
+        hint: error.hint ?? null,
+      },
+    });
+    return failure(503, 'CUSTOMER_REGISTRY_UNAVAILABLE', 'تعذر التحقق من حالة الحساب.');
+  }
+  if (!customer) return failure(403, 'CUSTOMER_NOT_REGISTERED', 'لا يوجد سجل عميل لهذا الحساب.');
+  // is_active arrives with migration 202610150001; before it exists every customer counts as active.
+  if (customer.is_active === false) return failure(403, 'CUSTOMER_SUSPENDED', 'هذا الحساب موقوف. تواصل مع الإدارة.');
+
+  return { ...authenticated, customer };
+}
+
+/**
+ * One device per account: the bound device passes, the first device binds,
+ * any other device is refused (lib/device-lock.js).
+ */
+export async function enforceDevice(context, request) {
+  if (!context?.ok) return context;
+  const headerDevice = readDeviceHeader(request);
+  const decision = decideDevice(context.customer?.device_id, headerDevice);
+  if (decision === 'ok') return context;
+  if (decision === 'missing') {
+    // The app's own pages always send the id. Until every phone runs the APK whose driving
+    // service sends it too, a request without one passes; DEVICE_LOCK_STRICT=true ends that.
+    if (process.env.DEVICE_LOCK_STRICT !== 'true') return context;
+    return failure(403, 'DEVICE_REQUIRED', DEVICE_MESSAGES.DEVICE_REQUIRED);
+  }
+
+  let result;
+  try {
+    const { data, error } = await context.client.rpc('bind_customer_device', { p_device: headerDevice });
+    if (error) throw error;
+    result = data;
+  } catch (exception) {
+    console.error('[Customer access] device binding failed', { message: exception?.message ?? null });
+    return failure(503, 'DEVICE_CHECK_UNAVAILABLE', DEVICE_MESSAGES.UNAVAILABLE);
+  }
+  if (result === 'OK') return context;
+  if (result === 'DEVICE_MISMATCH') return failure(403, 'DEVICE_MISMATCH', DEVICE_MESSAGES.DEVICE_MISMATCH);
+  if (result === 'SUSPENDED') return failure(403, 'CUSTOMER_SUSPENDED', DEVICE_MESSAGES.SUSPENDED);
+  if (result === 'NOT_REGISTERED') return failure(403, 'CUSTOMER_NOT_REGISTERED', DEVICE_MESSAGES.NOT_REGISTERED);
+  return failure(403, 'DEVICE_REQUIRED', DEVICE_MESSAGES.DEVICE_REQUIRED);
+}
+
+export async function requireCustomerRegistered(request) {
+  const context = await getCustomerContext(await authenticateRequest(request));
+  return enforceDevice(context, request);
+}
+
+export function customerAccessResponse(access) {
+  return NextResponse.json(
+    { error: true, code: access.code, message: access.message },
+    { status: access.status }
+  );
+}
+
+=== PAIRING MIGRATION ===
+-- Smart.z: Computer Pairing Foundation
+-- Phase 2: schema only; no live pairing execution.
+-- Do not modify phone pairing or the existing device lock.
+
+begin;
+
+-- Registered computers belonging to a customer.
+create table if not exists public.computer_devices (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null
+    references public.customer_registry(user_id) on delete cascade,
+  label text not null default 'Windows computer',
+  public_key text not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'active', 'revoked')),
+  paired_at timestamptz,
+  last_seen_at timestamptz,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  constraint computer_devices_user_id_id_unique
+    unique (user_id, id),
+
+  constraint computer_devices_user_public_key_unique
+    unique (user_id, public_key),
+
+  constraint computer_devices_revoked_consistency
+    check (
+      (status = 'revoked' and revoked_at is not null)
+      or
+      (status <> 'revoked' and revoked_at is null)
+    )
+);
+
+create index if not exists computer_devices_user_status_idx
+  on public.computer_devices(user_id, status);
+
+-- Allowlisted task types only; no arbitrary shell commands.
+create table if not exists public.computer_tasks (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null
+    references public.customer_registry(user_id) on delete cascade,
+  device_id uuid not null,
+  task_type text not null
+    check (
+      task_type in (
+        'list_files',
+        'search_files',
+        'file_metadata',
+        'transfer_file'
+      )
+    ),
+  status text not null default 'queued'
+    check (
+      status in (
+        'queued',
+        'awaiting_approval',
+        'approved',
+        'running',
+        'succeeded',
+        'failed',
+        'cancelled',
+        'expired'
+      )
+    ),
+  payload jsonb not null default '{}'::jsonb
+    check (jsonb_typeof(payload) = 'object'),
+  result jsonb
+    check (result is null or jsonb_typeof(result) = 'object'),
+  expires_at timestamptz not null default (now() + interval '10 minutes'),
+  started_at timestamptz,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  constraint computer_tasks_user_id_id_unique
+    unique (user_id, id),
+
+  constraint computer_tasks_device_owner_fk
+    foreign key (user_id, device_id)
+    references public.computer_devices(user_id, id)
+    on delete cascade,
+
+  constraint computer_tasks_expiry_check
+    check (expires_at > created_at)
+);
+
+create index if not exists computer_tasks_user_status_created_idx
+  on public.computer_tasks(user_id, status, created_at desc);
+
+create index if not exists computer_tasks_device_status_idx
+  on public.computer_tasks(device_id, status);
+
+create index if not exists computer_tasks_expiry_idx
+  on public.computer_tasks(expires_at)
+  where status in ('queued', 'awaiting_approval', 'approved');
+
+-- Explicit approval records for sensitive operations.
+create table if not exists public.computer_task_approvals (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null
+    references public.customer_registry(user_id) on delete cascade,
+  task_id uuid not null,
+  decision text not null default 'pending'
+    check (decision in ('pending', 'approved', 'rejected', 'expired')),
+  requested_at timestamptz not null default now(),
+  expires_at timestamptz not null default (now() + interval '10 minutes'),
+  decided_at timestamptz,
+  created_at timestamptz not null default now(),
+
+  constraint computer_task_approvals_task_owner_fk
+    foreign key (user_id, task_id)
+    references public.computer_tasks(user_id, id)
+    on delete cascade,
+
+  constraint computer_task_approvals_one_per_task
+    unique (user_id, task_id),
+
+  constraint computer_task_approvals_expiry_check
+    check (expires_at > requested_at),
+
+  constraint computer_task_approvals_decision_consistency
+    check (
+      (decision = 'pending' and decided_at is null)
+      or
+      (decision <> 'pending' and decided_at is not null)
+    )
+);
+
+create index if not exists computer_task_approvals_pending_idx
+  on public.computer_task_approvals(user_id, expires_at)
+  where decision = 'pending';
+
+-- Minimal audit metadata. Do not store file contents, secrets,
+-- pairing tokens, private keys, or authentication credentials here.
+create table if not exists public.computer_audit_logs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null
+    references public.customer_registry(user_id) on delete cascade,
+  device_id uuid,
+  task_id uuid,
+  actor_type text not null
+    check (actor_type in ('customer', 'admin', 'computer', 'system')),
+  event_type text not null
+    check (
+      event_type in (
+        'pairing_requested',
+        'pairing_approved',
+        'pairing_rejected',
+        'device_revoked',
+        'task_created',
+        'approval_decided',
+        'task_started',
+        'task_completed',
+        'task_failed',
+        'task_cancelled',
+        'task_expired'
+      )
+    ),
+  details jsonb not null default '{}'::jsonb
+    check (jsonb_typeof(details) = 'object'),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists computer_audit_logs_user_created_idx
+  on public.computer_audit_logs(user_id, created_at desc);
+
+create index if not exists computer_audit_logs_task_idx
+  on public.computer_audit_logs(task_id)
+  where task_id is not null;
+
+-- No direct table access from clients. Server-side APIs must authenticate
+-- and authorize each operation before using the service role.
+alter table public.computer_devices enable row level security;
+alter table public.computer_tasks enable row level security;
+alter table public.computer_task_approvals enable row level security;
+alter table public.computer_audit_logs enable row level security;
+
+revoke all on public.computer_devices
+  from public, anon, authenticated;
+revoke all on public.computer_tasks
+  from public, anon, authenticated;
+revoke all on public.computer_task_approvals
+  from public, anon, authenticated;
+revoke all on public.computer_audit_logs
+  from public, anon, authenticated;
+
+grant all on public.computer_devices to service_role;
+grant all on public.computer_tasks to service_role;
+grant all on public.computer_task_approvals to service_role;
+grant all on public.computer_audit_logs to service_role;
+
+comment on table public.computer_devices is
+  'Registered customer computers. Pairing protocol is implemented in a later phase.';
+comment on table public.computer_tasks is
+  'Allowlisted computer task queue; does not authorize arbitrary command execution.';
+comment on table public.computer_task_approvals is
+  'Explicit, expiring approval records for computer tasks.';
+comment on table public.computer_audit_logs is
+  'Minimal audit metadata; must not contain credentials or file contents.';
+
+commit;
+
+=== API ROUTES ===
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\admin\customers\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\assistant\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\auth\access\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\documents\draft\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\drive\turn\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\learn\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\meta\data-deletion\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\speech\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\study\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\transcribe\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\vision\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\cluster\connect\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\cluster\contacts\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\cluster\disconnect\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\cluster\message\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\cluster\send\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\cluster\settings\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\cluster\status\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\connection\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\embedded-signup\callback\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\embedded-signup\start\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\inbox\route.js
+C:\Users\LENOVO\Desktop\Smart.z-computer-pairing\app\api\whatsapp\webhook\route.js
+
+=== GIT STATUS ===
+## feat/computer-pairing-api...origin/main
+?? computer-pairing-review.txt

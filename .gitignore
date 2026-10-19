@@ -1,6 +1,8 @@
 node_modules/
 .next/
+.open-next/
 .vercel/
+.wrangler/
 out/
 build/
 .env
@@ -15,4 +17,10 @@ build/
 
 # local tooling
 .env.*.local
+.dev.vars*
+!.dev.vars.example
 auth_info_baileys/
+
+# Generated Windows agent build artifacts
+/computer-agent/bin/
+/computer-agent/obj/

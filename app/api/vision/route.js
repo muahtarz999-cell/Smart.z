@@ -3,7 +3,6 @@ import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/
 import { sanitizeHistory } from '../../../lib/assistant-response';
 import { analyzeImages, MAX_IMAGE_BASE64_LENGTH, MAX_VISION_IMAGES } from '../../../lib/vision';
 
-export const runtime = 'edge';
 
 // Questions about photos and scanned pages. Images are analysed and discarded; nothing is stored or logged.
 export async function POST(request) {

@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { confirmationCode, parseSignedRequest } from '../../../../lib/meta-signed-request';
 
-export const runtime = 'edge';
 
 /**
  * Meta's Data Deletion Request Callback. Called when a person removes the app

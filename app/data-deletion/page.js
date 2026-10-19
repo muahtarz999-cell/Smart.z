@@ -1,7 +1,6 @@
 import { LegalPage, List, Section } from '../../components/LegalPage';
 import { CONTACT_EMAIL, POLICY_UPDATED_AR, POLICY_UPDATED_EN } from '../../lib/legal-entity';
 
-export const runtime = 'edge';
 
 export const metadata = {
   title: 'حذف البيانات · Data Deletion — Smart.z',

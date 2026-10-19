@@ -20,7 +20,6 @@ async function voiceNoteParts(text, voice = {}) {
   return audio.length ? audio.map((part) => ({ data: part.data })) : null;
 }
 
-export const runtime = 'edge';
 
 const JID = /^[\w.:-]+@(s\.whatsapp\.net|g\.us|lid)$/;
 

@@ -4,7 +4,6 @@ import { callNode } from '../../../../lib/whatsapp-cluster';
 import { linkedWhatsAppNode } from '../../../../lib/whatsapp-commands';
 import { sanitizeInboxItems } from '../../../../lib/whatsapp-inbox';
 
-export const runtime = 'edge';
 
 /**
  * Passes incoming messages from the customer's WhatsApp node to the phone.

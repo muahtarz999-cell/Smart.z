@@ -2,7 +2,6 @@ import { json } from '../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
 import { listAvailableProviders, MAX_TTS_CHARACTERS, synthesizeWithFallback } from '../../../lib/cloud-tts';
 
-export const runtime = 'edge';
 
 // Which cloud voices are configured (for the settings screen).
 export async function GET(request) {

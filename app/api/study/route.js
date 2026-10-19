@@ -3,7 +3,6 @@ import { AssistantResponseError, completeWithSystem, parseJsonReply } from '../.
 import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
 import { isUsableStudyResult, normalizeStudyResult, STUDY_TYPES } from '../../../lib/study-schema';
 
-export const runtime = 'edge';
 
 const MAX_SOURCE = 14_000;
 const COMMON = 'أنت معلم خبير يساعد طالباً على مذاكرة مادته. اعتمد على النص المعطى فقط ولا تضف معلومات من خارجه. اكتب بلغة النص (العربية غالباً). أعد JSON فقط.';

@@ -2,7 +2,6 @@ import { json } from '../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
 import { transcribeAudio, TranscriptionError } from '../../../lib/transcription';
 
-export const runtime = 'edge';
 
 export async function POST(request) {
   const access = await requireCustomerRegistered(request);
