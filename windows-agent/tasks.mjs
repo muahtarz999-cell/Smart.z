@@ -8,14 +8,17 @@
 
 import { readdir, stat, copyFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, resolve, normalize, dirname } from 'node:path';
+import { join, resolve, normalize, dirname, sep } from 'node:path';
 
 // ─── Path sandboxing ──────────────────────────────────────────────────────────
 
 function sandboxed(authorizedRoot, ...parts) {
   const root = normalize(resolve(authorizedRoot));
-  const full = normalize(resolve(root, ...parts));
-  if (!full.startsWith(root + '\\') && full !== root) {
+  // Tasks originate from Windows clients, but the agent's tests and CI may run
+  // on Linux. Treat both slash styles as path separators before resolving.
+  const portableParts = parts.map((part) => String(part).replace(/[\\/]+/g, sep));
+  const full = normalize(resolve(root, ...portableParts));
+  if (!full.startsWith(root + sep) && full !== root) {
     throw Object.assign(new Error('مسار خارج نطاق الصلاحية'), { code: 'OUTSIDE_SANDBOX' });
   }
   return full;
