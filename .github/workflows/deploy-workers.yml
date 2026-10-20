@@ -9,6 +9,7 @@ on:
       - 'app/**'
       - 'components/**'
       - 'lib/**'
+      - 'windows-agent/**'
       - 'public/**'
       - 'open-next.config.ts'
       - 'wrangler.toml'
