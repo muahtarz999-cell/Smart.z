@@ -3,7 +3,7 @@ import test from 'node:test';
 import { findGeminiAudio, getProviderOrder, listAvailableProviders, synthesizeWithFallback } from '../lib/cloud-tts.js';
 
 function env(values) {
-  for (const key of ['GROQ_API_KEY', 'AZURE_SPEECH_KEY', 'AZURE_SPEECH_REGION', 'GOOGLE_TTS_API_KEY', 'GEMINI_API_KEY', 'TTS_PROVIDER_ORDER', 'GROQ_TTS_DISABLED']) delete process.env[key];
+  for (const key of ['GROQ_API_KEY', 'AZURE_SPEECH_KEY', 'AZURE_SPEECH_REGION', 'GOOGLE_TTS_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'TTS_PROVIDER_ORDER', 'GROQ_TTS_DISABLED']) delete process.env[key];
   Object.assign(process.env, values);
 }
 
@@ -53,6 +53,45 @@ test('text longer than 200 characters skips Groq instead of failing', async () =
   const result = await synthesizeWithFallback('ا'.repeat(250));
   assert.equal(result.provider, 'google');
   assert.equal(result.contentType, 'audio/mpeg');
+});
+
+test('OpenRouter Gemini TTS is available as the last configured fallback', async () => {
+  env({ GROQ_API_KEY: 'g', OPENROUTER_API_KEY: 'or-key' });
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (String(url).includes('groq')) {
+      return { ok: false, status: 503, headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    return audioResponse('audio/mpeg');
+  };
+
+  assert.deepEqual(getProviderOrder(), ['groq', 'openrouter']);
+  assert.deepEqual(
+    listAvailableProviders().map(({ id }) => id),
+    ['groq', 'openrouter']
+  );
+
+  const result = await synthesizeWithFallback('Hello، مرحباً', { voices: { openrouter: 'Kore' } });
+  assert.equal(result.provider, 'openrouter');
+  assert.equal(result.voice, 'Kore');
+  assert.ok(result.audio instanceof Uint8Array);
+  assert.equal(result.contentType, 'audio/mpeg');
+  assert.equal(calls.length, 2);
+
+  const request = calls[1];
+  assert.equal(request.url, 'https://openrouter.ai/api/v1/audio/speech');
+  assert.equal(request.init.headers.Authorization, 'Bearer or-key');
+  assert.equal(request.init.headers['HTTP-Referer'], 'https://smart-z.pages.dev');
+  assert.equal(request.init.headers['X-Title'], 'Smart.z System');
+  assert.ok(request.init.signal instanceof AbortSignal);
+  assert.deepEqual(JSON.parse(request.init.body), {
+    model: 'google/gemini-3.8-flash-lite-tts',
+    input: 'Hello، مرحباً',
+    voice: 'Kore',
+    response_format: 'mp3',
+    instructions: 'Speak the input in its original language. For Arabic, use clear, natural Arabic pronunciation.',
+  });
 });
 
 test('a preferred provider goes first; when all fail the error lists each failure', async () => {
