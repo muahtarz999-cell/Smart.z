@@ -38,12 +38,15 @@ public class DocumentExportPlugin extends Plugin {
                     output.write(Base64.decode(data, Base64.DEFAULT));
                 }
                 Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", sharedFile);
-                Intent share = new Intent(Intent.ACTION_SEND)
-                    .setType(mimeType)
-                    .putExtra(Intent.EXTRA_STREAM, uri)
-                    .setClipData(ClipData.newRawUri("document", uri))
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                getActivity().startActivity(Intent.createChooser(share, "مشاركة ملف"));
+                Intent share = new Intent(Intent.ACTION_SEND);
+                share.setType(mimeType);
+                share.putExtra(Intent.EXTRA_STREAM, uri);
+                share.setClipData(ClipData.newRawUri("document", uri));
+                share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+                getActivity().startActivity(
+                    Intent.createChooser(share, "مشاركة ملف")
+                );
                 call.resolve();
             } catch (Exception error) {
                 call.reject("تعذر فتح قائمة المشاركة.", error);
