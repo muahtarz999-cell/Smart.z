@@ -615,8 +615,8 @@ export default function Home() {
       if (command.action === 'download') {
         if (command.format === 'pdf') printDocument(doc);
         else await shareOrDownload(documentToDocx(doc));
-        say(`حفظته في مستنداتي باسم «${doc.title}» وجهّزت التنزيل. إن لم يبدأ فاضغط زر Word في أعلى المستند.`);
-      } else say(`حفظته في مستنداتي باسم «${doc.title}». ومن هناك تنزّله Word أو PDF.`);
+        say(`حفظته في مستنداتي باسم «${doc.title}» وجهّزت المشاركة. إن لم تفتح فاضغط زر مشاركة في أعلى المستند.`);
+      } else say(`حفظته في مستنداتي باسم «${doc.title}». ومن هناك تشاركه أو تحفظه PDF.`);
     } catch {
       say('تعذّر حفظ المستند. حاول مرة ثانية.');
     }
