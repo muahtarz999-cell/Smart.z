@@ -1,45 +1,54 @@
 package com.smartz.assistant;
 
-import android.content.ContentValues;
-import android.os.Build;
-import android.os.Environment;
-import android.provider.MediaStore;
+import android.content.ClipData;
+import android.content.Intent;
+import android.net.Uri;
 import android.print.PrintAttributes;
 import android.print.PrintManager;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.util.Base64;
 
+import androidx.core.content.FileProvider;
+
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import java.io.OutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 
 @CapacitorPlugin(name = "DocumentExport")
 public class DocumentExportPlugin extends Plugin {
     @PluginMethod
-    public void saveWord(PluginCall call) {
+    public void shareFile(PluginCall call) {
         String fileName = call.getString("fileName", "مستند.docx");
+        String mimeType = call.getString("mimeType", "application/octet-stream");
         String data = call.getString("data", "");
-        if (data.isEmpty()) { call.reject("ملف Word فارغ."); return; }
-        try {
-            byte[] bytes = Base64.decode(data, Base64.DEFAULT);
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
-            values.put(MediaStore.Downloads.MIME_TYPE, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-            android.net.Uri uri = getContext().getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) throw new IllegalStateException("تعذر إنشاء ملف التنزيل.");
-            try (OutputStream output = getContext().getContentResolver().openOutputStream(uri)) {
-                if (output == null) throw new IllegalStateException("تعذر فتح ملف التنزيل.");
-                output.write(bytes);
+        if (data.isEmpty()) { call.reject("الملف فارغ."); return; }
+        getActivity().runOnUiThread(() -> {
+            try {
+                File sharedDirectory = new File(getContext().getCacheDir(), "shared-documents");
+                if (!sharedDirectory.exists() && !sharedDirectory.mkdirs()) {
+                    throw new IllegalStateException("تعذر تجهيز الملف للمشاركة.");
+                }
+                File sharedFile = new File(sharedDirectory, new File(fileName).getName());
+                try (FileOutputStream output = new FileOutputStream(sharedFile)) {
+                    output.write(Base64.decode(data, Base64.DEFAULT));
+                }
+                Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", sharedFile);
+                Intent share = new Intent(Intent.ACTION_SEND)
+                    .setType(mimeType)
+                    .putExtra(Intent.EXTRA_STREAM, uri)
+                    .setClipData(ClipData.newRawUri("document", uri))
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                getActivity().startActivity(Intent.createChooser(share, "مشاركة ملف"));
+                call.resolve();
+            } catch (Exception error) {
+                call.reject("تعذر فتح قائمة المشاركة.", error);
             }
-            call.resolve();
-        } catch (Exception error) {
-            call.reject("تعذر حفظ ملف Word في مجلد التنزيلات.", error);
-        }
+        });
     }
 
     @PluginMethod
