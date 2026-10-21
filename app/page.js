@@ -7,10 +7,12 @@ import LocalDataPanel from '../components/LocalDataPanel';
 import FilesPanel from '../components/FilesPanel';
 import FileIntake from '../components/FileIntake';
 import DocumentsPanel from '../components/DocumentsPanel';
+import LegalLibraryPanel from '../components/LegalLibraryPanel';
 import StudyPanel from '../components/StudyPanel';
 import { prepareAttachmentContext } from '../lib/attachments';
 import { hasFileAnalysisConsent, latestFile, setFileAnalysisConsent } from '../lib/file-store';
-import { documentToDocx, findDocumentByTitle } from '../lib/documents';
+import { documentToDocx, findDocumentByTitle, printDocument, saveDocument, shareOrDownload } from '../lib/documents';
+import { cleanReplyForDocument, parseDocumentCommand, pickDocumentReply, titleFromBody } from '../lib/document-commands';
 import { blobToBase64 } from '../lib/file-processing';
 import { templateFromRequest } from '../lib/document-templates';
 import { answerVoiceQuiz, isVoiceQuizActive } from '../lib/voice-quiz';
@@ -71,6 +73,7 @@ const MENU_SECTIONS = [
   { id: 'tasks', label: 'مهامي' },
   { id: 'files', label: 'ملفاتي' },
   { id: 'documents', label: 'مستنداتي' },
+  { id: 'legal', label: 'المكتبة القانونية' },
   { id: 'study', label: 'المذاكرة' },
   { id: 'audio', label: 'الصوت' },
   { id: 'driving', label: 'وضع القيادة' },
@@ -177,6 +180,7 @@ export default function Home() {
   const [attachment, setAttachment] = useState(null); // a file from "ملفاتي" the next questions are about
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [documentTemplateRequest, setDocumentTemplateRequest] = useState(null);
+  const [documentToOpen, setDocumentToOpen] = useState(null);
   const [studyFileId, setStudyFileId] = useState(null);
   const attachmentRef = useRef(null);
   const intakeRef = useRef(null);
@@ -590,6 +594,34 @@ export default function Home() {
     speakReply(text).catch(() => {});
   }
 
+  async function runDocumentCommand(command) {
+    if (command.source === 'file') {
+      setActiveSection('files');
+      setMenuOpen(true);
+      say('الملف المرفق محفوظ بنسخته الأصلية في «ملفاتي»، وتجد هناك زر «تصدير» لتحميله. أما «مستنداتي» فهي للنصوص التي أكتبها لك.');
+      return;
+    }
+    try {
+      const picked = pickDocumentReply(await getRecentMessages(20));
+      if (!picked) {
+        say('ما لقيت في المحادثة نصًّا طويلًا أنقله. اطلب مني كتابة العقد أو الخطاب أولًا، ثم قل «احفظه في مستنداتي».');
+        return;
+      }
+      const body = cleanReplyForDocument(picked);
+      const doc = await saveDocument({ title: command.title || titleFromBody(body, 'نص من المحادثة'), body });
+      setDocumentToOpen(doc.id);
+      setActiveSection('documents');
+      setMenuOpen(true);
+      if (command.action === 'download') {
+        if (command.format === 'pdf') printDocument(doc);
+        else await shareOrDownload(documentToDocx(doc));
+        say(`حفظته في مستنداتي باسم «${doc.title}» وجهّزت التنزيل. إن لم يبدأ فاضغط زر Word في أعلى المستند.`);
+      } else say(`حفظته في مستنداتي باسم «${doc.title}». ومن هناك تنزّله Word أو PDF.`);
+    } catch {
+      say('تعذّر حفظ المستند. حاول مرة ثانية.');
+    }
+  }
+
   /** Utterances handled on the device without the assistant: quiz answers, "تراجع", "اكتب لي عقد". */
   function interceptLocally(text) {
     const drivingMode = drivingRef.current;
@@ -609,6 +641,11 @@ export default function Home() {
     }
     if (isCancelCommand(text) && cancelPendingSend()) {
       setReply('ألغيت الإرسال.');
+      return true;
+    }
+    const documentCommand = parseDocumentCommand(text);
+    if (documentCommand) {
+      void runDocumentCommand(documentCommand);
       return true;
     }
     const template = templateFromRequest(text);
@@ -1726,7 +1763,11 @@ export default function Home() {
                     getAccessToken={getAccessToken}
                     initialTemplateId={documentTemplateRequest}
                     onConsumedInitial={() => setDocumentTemplateRequest(null)}
+                    openDocumentId={documentToOpen}
+                    onConsumedOpen={() => setDocumentToOpen(null)}
                   />
+                ) : activeSection === 'legal' ? (
+                  <LegalLibraryPanel getAccessToken={getAccessToken} />
                 ) : activeSection === 'study' ? (
                   <StudyPanel getAccessToken={getAccessToken} initialFileId={studyFileId} />
                 ) : activeSection === 'audio' ? (

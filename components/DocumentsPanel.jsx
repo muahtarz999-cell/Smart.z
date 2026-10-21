@@ -16,7 +16,7 @@ import { blobToBase64 } from '../lib/file-processing';
 const button = 'min-h-9 rounded-md border border-base-border px-3 text-xs text-text-primary hover:bg-base-panel disabled:opacity-50';
 const primary = 'min-h-10 rounded-lg bg-gold px-3 text-sm font-semibold text-base-bg disabled:opacity-50';
 
-export default function DocumentsPanel({ getAccessToken, initialTemplateId, onConsumedInitial }) {
+export default function DocumentsPanel({ getAccessToken, initialTemplateId, onConsumedInitial, openDocumentId, onConsumedOpen }) {
   const [view, setView] = useState({ name: 'list' }); // list | wizard | free | editor
   const [documents, setDocuments] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -33,6 +33,12 @@ export default function DocumentsPanel({ getAccessToken, initialTemplateId, onCo
       onConsumedInitial?.();
     }
   }, [initialTemplateId, onConsumedInitial]);
+  useEffect(() => {
+    if (openDocumentId) {
+      setView({ name: 'editor', id: openDocumentId });
+      onConsumedOpen?.();
+    }
+  }, [openDocumentId, onConsumedOpen]);
 
   async function draft(payload) {
     setBusy(true);
