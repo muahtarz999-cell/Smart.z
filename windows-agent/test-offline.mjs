@@ -31,7 +31,11 @@ test.before(async () => {
   await writeFile(join(tmpRoot, 'images', 'photo.jpg'), Buffer.alloc(1024, 0));
   await writeFile(join(tmpRoot, 'readme.md'), '# Test');
 });
-test.after(async () => { await rm(tmpRoot, { recursive: true, force: true }); });
+test.after(async () => {
+  // Node's --test-name-pattern can skip every test (and thus the setup hook),
+  // while still running this cleanup hook. Do not pass an undefined path to rm.
+  if (tmpRoot) await rm(tmpRoot, { recursive: true, force: true });
+});
 
 // ── list_files ───────────────────────────────────────────────────────────────
 
