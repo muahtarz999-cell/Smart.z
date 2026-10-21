@@ -236,7 +236,7 @@ function DocumentEditor({ id, back, draft, busy, message, setMessage, getAccessT
       <div className="grid grid-cols-3 gap-2">
         <button type="button" className={button} disabled={!dirty} onClick={save}>حفظ</button>
         <button type="button" className={button} onClick={() => shareOrDownload(documentToDocx({ ...doc, title, body }))}>Word</button>
-        <button type="button" className={button} onClick={() => printDocument({ ...doc, title, body })}>طباعة / PDF</button>
+        <button type="button" className={button} onClick={() => void printDocument({ ...doc, title, body })}>طباعة / PDF</button>
       </div>
 
       <div className="space-y-2 rounded-lg border border-base-border bg-base-card p-3">

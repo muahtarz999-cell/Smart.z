@@ -13,6 +13,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(SpeechEngineSetupPlugin.class);
         registerPlugin(SmartSpeechPlugin.class);
         registerPlugin(DrivingModePlugin.class);
+        registerPlugin(DocumentExportPlugin.class);
         super.onCreate(savedInstanceState);
 
         // The web app records the menu and its sections as history entries:
