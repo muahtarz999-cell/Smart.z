@@ -47,6 +47,10 @@ import {
 import { configureSpeech, getVoiceSettings, primeSpeech, speak as speakReply } from '../lib/speech';
 import VoiceSettings from '../components/VoiceSettings';
 import SendActionBanner from '../components/SendActionBanner';
+import ComputerTaskBanner from '../components/ComputerTaskBanner';
+import { dispatchAssistantAction, getAssistantCapabilities } from '../lib/assistant-actions';
+import { configureComputerTasks } from '../lib/computer-task-flow';
+import { isPhoneAgentRunning, stopPhoneAgent, updatePhoneAgentToken } from '../lib/phone-agent';
 import SendSettings from '../components/SendSettings';
 import { cancelPendingSend, configureSendActions, getActionSettings, isCancelCommand, queueSend } from '../lib/send-actions';
 import DrivingSettings from '../components/DrivingSettings';
@@ -644,6 +648,11 @@ export default function Home() {
       setReply('ألغيت الإرسال.');
       return true;
     }
+    if (isPhoneAgentRunning() && /^[أا]?(وقف|توقف)\s*(التحكم|المهم[ةه])?[.!]?$/.test(text.trim())) {
+      void stopPhoneAgent();
+      say('أوقفت التحكم في التطبيقات.');
+      return true;
+    }
     const documentCommand = parseDocumentCommand(text);
     if (documentCommand) {
       void runDocumentCommand(documentCommand);
@@ -683,6 +692,23 @@ export default function Home() {
         if (!result.ok) setAudioPlaybackError(result.error?.message || result.data?.error || 'تعذر إرسال رسالة واتساب.');
       },
     });
+    configureComputerTasks({
+      getAccessToken,
+      // The computer answers after the conversation turn ended: show it and keep it in the history.
+      onResult: ({ summary }) => {
+        if (!summary) return;
+        setReply(summary);
+        addMessage('assistant', summary).catch(() => {});
+      },
+    });
+    const runAssistantAction = (action) => dispatchAssistantAction(action, {
+      getAccessToken,
+      onMessage: (text) => setAudioPlaybackError(text),
+      onAgentProgress: (event) => {
+        if (event?.say) setReply(event.say);
+        if (event?.status && event.status !== 'running' && event.say) addMessage('assistant', event.say).catch(() => {});
+      },
+    });
     const audioFlow = new AudioFlowManager({
       getAccessToken,
       getPreferences: () => ({
@@ -690,8 +716,11 @@ export default function Home() {
         language: profileRef.current.language,
         confirmEverySend: getActionSettings().confirmEverySend,
       }),
-      getContext: getAssistantContext,
-      onAction: queueSend,
+      getContext: async () => ({
+        ...((await Promise.resolve(getAssistantContext()).catch(() => ({}))) || {}),
+        capabilities: getAssistantCapabilities(),
+      }),
+      onAction: (action) => { void runAssistantAction(action); },
       interceptTranscript: (text) => interceptLocally(text),
       prepareAttachment,
       getInboxContext: (message) => inboxContextFor(message, getAccessToken),
@@ -790,6 +819,7 @@ export default function Home() {
       accessToken: authSession.access_token,
       expiresAt: authSession.expires_at ? authSession.expires_at * 1000 : 0,
     });
+    void updatePhoneAgentToken(authSession.access_token);
   }, [authSession?.access_token]);
 
   // Leaving the app (another app, locked screen): close the microphone and stay silent
@@ -1250,6 +1280,7 @@ export default function Home() {
               </div>
 
               <SendActionBanner />
+              <ComputerTaskBanner />
 
               {attachment && (
                 <div className="mx-4 mb-2 flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/5 px-3 py-2 text-xs">
@@ -1974,6 +2005,7 @@ export default function Home() {
                             : 'التخزين محلي؛ هذا المتصفح لا يوفّر حماية إضافية من إزالة البيانات عند انخفاض مساحة الجهاز.'}
                       </p>
                       <p className="mt-2">تُرسل الرسائل النصية والتسجيلات الصوتية إلى Groq للمعالجة وتوليد الرد. إذا تعذّر Groq، قد يُرسل نص الطلب إلى OpenRouter كبديل لتوليد الردود النصية؛ لا تُرسل الملاحظات أو المهام أو الذكريات المحلية. يُنطق رد المساعد بصوت عربي محلي من الجهاز، ولا يُرسل النص إلى خدمة صوت خارجية.</p>
+                      <p className="mt-2">عند طلب «التحكم في التطبيقات» على أندرويد، تُرسل النصوص الظاهرة على شاشة التطبيق المستهدف إلى Groq (أو OpenRouter كبديل) في كل خطوة لاختيار الخطوة التالية، طوال تنفيذ المهمة فقط. لا يُرسل محتوى حقول كلمات المرور، ويمكنك الإيقاف من الإشعار في أي وقت.</p>
                       <p className="mt-2">عند تأكيد فتح مسودة WhatsApp أو X، يُشارك الرقم ونص المسودة مع الخدمة الخارجية لفتحها؛ لا يتم الإرسال أو النشر إلا بضغطك داخل التطبيق نفسه.</p>
                     </div>
 

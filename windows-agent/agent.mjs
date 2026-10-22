@@ -7,8 +7,8 @@
  * Continuously polls Smart.z for approved tasks, executes them locally,
  * and reports results back. Stops on SIGINT/SIGTERM.
  *
- * Only file operations within authorizedRoot are executed.
- * No shell commands, no network access from tasks.
+ * File operations run only within authorizedRoot. Apps and commands run only
+ * when listed by name in local-actions.json on this computer.
  */
 
 import { loadIdentity } from './identity.mjs';

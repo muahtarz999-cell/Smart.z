@@ -1,14 +1,16 @@
 /**
  * Smart.z Windows Agent – task executor
  *
- * Executes ONLY the four allowlisted file task types.
- * All paths are validated against authorizedRoot before any operation.
- * No shell commands. No arbitrary file access outside authorizedRoot.
+ * File tasks run only inside authorizedRoot (paths validated before any operation).
+ * open_file/open_url open a document or link with the default app.
+ * open_app/run_command run only what the user listed in local-actions.json on
+ * this computer; the phone sends a name, never a path or a command line.
  */
 
 import { readdir, stat, copyFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve, normalize, dirname, sep } from 'node:path';
+import { loadLocalActions, openApp, openDocument, openUrl, runCommand, defaultLauncher } from './local-actions.mjs';
 
 // ─── Path sandboxing ──────────────────────────────────────────────────────────
 
@@ -129,14 +131,21 @@ export async function transferFile(payload) {
 
 // ─── dispatcher ──────────────────────────────────────────────────────────────
 
-export async function executeTask(task) {
+export async function executeTask(task, { launcher = defaultLauncher, actions } = {}) {
   try {
     let result;
+    const local = () => actions ?? loadLocalActions();
     switch (task.task_type) {
       case 'list_files':    result = await listFiles(task.payload); break;
       case 'search_files':  result = await searchFiles(task.payload); break;
       case 'file_metadata': result = await fileMetadata(task.payload); break;
       case 'transfer_file': result = await transferFile(task.payload); break;
+      case 'open_file':
+        result = openDocument(sandboxed(task.payload.authorizedRoot, task.payload.path), task.payload.path, launcher);
+        break;
+      case 'open_url':      result = openUrl(task.payload.url, launcher); break;
+      case 'open_app':      result = openApp(task.payload.appName, local(), launcher); break;
+      case 'run_command':   result = await runCommand(task.payload.commandName, local()); break;
       default:
         return { status: 'failed', result: { error: 'نوع مهمة غير مدعوم', task_type: task.task_type } };
     }

@@ -25,3 +25,4 @@ auth_info_baileys/
 # Generated Windows agent build artifacts
 /computer-agent/bin/
 /computer-agent/obj/
+/windows-agent/local-actions.json

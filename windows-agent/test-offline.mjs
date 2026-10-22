@@ -162,3 +162,54 @@ test('makeNonce: unique url-safe strings', () => {
   assert.ok(/^[A-Za-z0-9_-]+$/.test(n1));
   assert.notEqual(n1, n2);
 });
+
+// ── local actions (open_file / open_url / open_app / run_command) ───────────
+
+test('executeTask: open_file opens a document inside the root', async () => {
+  const opened = [];
+  const r = await executeTask(
+    { task_type: 'open_file', payload: { authorizedRoot: tmpRoot, path: 'docs/report.txt' } },
+    { launcher: (target) => opened.push(target) },
+  );
+  assert.equal(r.status, 'succeeded');
+  assert.equal(opened.length, 1);
+  assert.ok(opened[0].endsWith('report.txt'));
+});
+
+test('executeTask: open_file refuses programs and paths outside the root', async () => {
+  await writeFile(join(tmpRoot, 'docs', 'tool.bat'), '@echo off');
+  const opened = [];
+  const launcher = (target) => opened.push(target);
+  const blocked = await executeTask({ task_type: 'open_file', payload: { authorizedRoot: tmpRoot, path: 'docs/tool.bat' } }, { launcher });
+  assert.equal(blocked.status, 'failed');
+  const outside = await executeTask({ task_type: 'open_file', payload: { authorizedRoot: tmpRoot, path: '../../etc/hosts' } }, { launcher });
+  assert.equal(outside.status, 'failed');
+  assert.equal(opened.length, 0);
+});
+
+test('executeTask: open_url allows only http(s)', async () => {
+  const opened = [];
+  const launcher = (target) => opened.push(target);
+  assert.equal((await executeTask({ task_type: 'open_url', payload: { url: 'https://example.com/a' } }, { launcher })).status, 'succeeded');
+  assert.equal((await executeTask({ task_type: 'open_url', payload: { url: 'file:///C:/Windows/System32/cmd.exe' } }, { launcher })).status, 'failed');
+  assert.deepEqual(opened, ['https://example.com/a']);
+});
+
+test('executeTask: open_app/run_command use only the local allowlist', async () => {
+  const actions = { apps: [{ name: 'المفكرة', path: join(tmpRoot, 'missing.exe') }], commands: [] };
+  const app = await executeTask({ task_type: 'open_app', payload: { appName: 'برنامج غير موجود' } }, { actions });
+  assert.equal(app.status, 'failed');
+  assert.equal(app.result.code, 'APP_NOT_IN_LOCAL_LIST');
+  assert.deepEqual(app.result.available, ['المفكرة']);
+  const command = await executeTask({ task_type: 'run_command', payload: { commandName: 'format c:' } }, { actions });
+  assert.equal(command.status, 'failed');
+  assert.equal(command.result.code, 'COMMAND_NOT_IN_LOCAL_LIST');
+});
+
+test('executeTask: run_command runs a listed command and returns its output', async () => {
+  const actions = { apps: [], commands: [{ name: 'إصدار نود', path: process.execPath, args: ['--version'] }] };
+  const r = await executeTask({ task_type: 'run_command', payload: { commandName: 'إصدار نود' } }, { actions });
+  assert.equal(r.status, 'succeeded');
+  assert.equal(r.result.exitCode, 0);
+  assert.match(r.result.output, /^v\d+/);
+});
