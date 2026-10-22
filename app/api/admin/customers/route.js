@@ -14,6 +14,7 @@ import {
   releaseNodeForUser,
 } from '../../../../lib/whatsapp-cluster';
 import { replacePhoneNumbers } from '../../../../lib/receptionist-store';
+import { brainStatus } from '../../../../lib/brain-providers';
 
 
 // Effectively permanent: Supabase Auth refuses sign-in and token refresh while banned.
@@ -75,8 +76,9 @@ async function systemHealth(service) {
     customers: database.count ?? null,
     capacity: { used: rows.length, total: clusterCapacity() },
     nodes,
+    brain: brainStatus(), // providers of the assistant's brain, in order, with their models
     services: {
-      ai: configured('GROQ_API_KEY') || configured('OPENROUTER_API_KEY'),
+      ai: brainStatus().some((provider) => provider.configured),
       aiBackup: configured('OPENROUTER_API_KEY'),
       cloudVoice: configured('AZURE_SPEECH_KEY') || configured('GOOGLE_TTS_API_KEY'),
       receptionist: configured('OPENAI_API_KEY', 'OPENAI_WEBHOOK_SECRET'),

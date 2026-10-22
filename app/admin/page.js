@@ -254,6 +254,16 @@ export default function AdminPage() {
                   </li>
                 ))}
               </ul>
+              {Array.isArray(health.brain) && (
+                <p className="text-text-secondary">
+                  عقل المساعد بالترتيب:{' '}
+                  {health.brain.map((provider, index) => (
+                    <span key={provider.name} dir="ltr" className={provider.configured ? 'text-emerald-300' : 'opacity-50'}>
+                      {index > 0 ? ' ← ' : ''}{provider.name} ({provider.model}){provider.configured ? '' : ' —'}
+                    </span>
+                  ))}
+                </p>
+              )}
               <p className="text-text-secondary">
                 {[
                   ['الذكاء الاصطناعي', health.services.ai],
