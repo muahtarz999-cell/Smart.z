@@ -6,6 +6,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { slotPrefix } from './slots.js';
 
 const STORE_KEY = 'smartz-contacts';
 
@@ -25,10 +26,11 @@ export function normalizeName(value) {
 }
 
 export class ContactBook {
-  constructor({ supabase, nodeId, dir }) {
+  constructor({ supabase, nodeId, dir, slot = 0 }) {
     this.supabase = supabase;
     this.nodeId = nodeId;
-    this.file = path.join(dir, 'auth_info_baileys', 'contacts.json');
+    this.storeKey = slotPrefix(slot) + STORE_KEY;
+    this.file = path.join(dir, slot > 0 ? `auth_info_baileys_slot${slot}` : 'auth_info_baileys', 'contacts.json');
     this.people = new Map(); // jid -> { jid, name, notify }
     this.groups = new Map(); // jid -> { jid, name }
     this.saveTimer = null;
@@ -38,7 +40,7 @@ export class ContactBook {
     let stored = null;
     if (this.supabase) {
       const { data } = await this.supabase.from('whatsapp_node_sessions')
-        .select('value').eq('node_id', this.nodeId).eq('key', STORE_KEY).maybeSingle();
+        .select('value').eq('node_id', this.nodeId).eq('key', this.storeKey).maybeSingle();
       stored = data?.value || null;
     } else {
       stored = JSON.parse(await fs.readFile(this.file, 'utf8').catch(() => 'null'));
@@ -56,7 +58,7 @@ export class ContactBook {
     const value = { people: [...this.people.values()], groups: [...this.groups.values()] };
     if (this.supabase) {
       await this.supabase.from('whatsapp_node_sessions').upsert(
-        { node_id: this.nodeId, key: STORE_KEY, value, updated_at: new Date().toISOString() },
+        { node_id: this.nodeId, key: this.storeKey, value, updated_at: new Date().toISOString() },
         { onConflict: 'node_id,key' },
       );
     } else {
@@ -70,7 +72,7 @@ export class ContactBook {
     this.people.clear();
     this.groups.clear();
     if (this.supabase) {
-      await this.supabase.from('whatsapp_node_sessions').delete().eq('node_id', this.nodeId).eq('key', STORE_KEY);
+      await this.supabase.from('whatsapp_node_sessions').delete().eq('node_id', this.nodeId).eq('key', this.storeKey);
     }
   }
 

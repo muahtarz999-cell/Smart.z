@@ -9,7 +9,7 @@ import {
   verifyWebhookSignature,
 } from '../../../../../lib/receptionist';
 import { findReceptionistOwner, loadReceptionistSettings } from '../../../../../lib/receptionist-store';
-import { callNode, createServiceClient, getClusterNode, getConfiguredClusterNodes, getUserAssignment } from '../../../../../lib/whatsapp-cluster';
+import { callNode, createServiceClient, getConfiguredClusterNodes, getUserAssignment, nodeForAssignment } from '../../../../../lib/whatsapp-cluster';
 
 export const runtime = 'nodejs';
 
@@ -30,7 +30,7 @@ async function openai(callId, action, body) {
 async function monitorNode(service, userId) {
   try {
     const assignment = await getUserAssignment(userId, service);
-    const own = assignment ? getClusterNode(assignment.node_id) : null;
+    const own = nodeForAssignment(assignment);
     if (own) return own;
   } catch {
     // fall through to any node

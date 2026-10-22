@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check inbox.js && node --check supabase-auth-state.js && node --check contacts.js && node --check voice-note.js && node --check sent-cache.js && node --check call-monitor.js",
+    "check": "node --check index.js && node --check inbox.js && node --check supabase-auth-state.js && node --check contacts.js && node --check voice-note.js && node --check sent-cache.js && node --check call-monitor.js && node --check slots.js",
     "test": "node --test checks/*.check.mjs"
   },
   "dependencies": {

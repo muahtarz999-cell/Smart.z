@@ -2,7 +2,7 @@ import { json } from '../../../../lib/api-response';
 import { completeWithSystem, parseJsonReply } from '../../../../lib/assistant-response';
 import { fallbackSummary, sanitizeCallReport, SUMMARY_SYSTEM, summaryPrompt } from '../../../../lib/receptionist';
 import { saveCallLog } from '../../../../lib/receptionist-store';
-import { callNode, createServiceClient, getClusterNode, getUserAssignment } from '../../../../lib/whatsapp-cluster';
+import { callNode, createServiceClient, getClusterNode, getUserAssignment, nodeForAssignment } from '../../../../lib/whatsapp-cluster';
 
 export const runtime = 'nodejs';
 
@@ -18,7 +18,7 @@ function sameToken(left, right) {
 async function alertOwner(service, userId, text) {
   try {
     const assignment = await getUserAssignment(userId, service);
-    const node = assignment?.status === 'connected' ? getClusterNode(assignment.node_id) : null;
+    const node = assignment?.status === 'connected' ? nodeForAssignment(assignment) : null;
     const own = String(assignment?.phone_number || '').replace(/\D/g, '');
     if (!node || !own) return;
     await callNode(node, '/api/send', { method: 'POST', timeoutMs: 10_000, body: { remoteJid: `${own}@s.whatsapp.net`, text } });

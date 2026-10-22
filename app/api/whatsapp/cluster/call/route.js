@@ -1,6 +1,6 @@
 import { json } from '../../../../../lib/api-response';
 import { decideWhatsAppCall } from '../../../../../lib/call-rules';
-import { createServiceClient, getClusterNode } from '../../../../../lib/whatsapp-cluster';
+import { createServiceClient, getClusterNode, slotFromBody } from '../../../../../lib/whatsapp-cluster';
 
 function sameToken(left, right) {
   const a = new TextEncoder().encode(left);
@@ -29,6 +29,7 @@ export async function POST(request) {
     .from('whatsapp_tenant_nodes')
     .select('*')
     .eq('node_id', node.id)
+    .eq('slot', slotFromBody(body))
     .maybeSingle();
   if (error) return json({ success: false, error: 'TENANT_LOOKUP_FAILED' }, 503);
   if (!tenant) return json({ success: true, reject: false, message: null });

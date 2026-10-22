@@ -64,6 +64,19 @@ export default function AdminPage() {
   const [notice, setNotice] = useState('');
   const [customers, setCustomers] = useState(null);
   const [capacity, setCapacity] = useState(null);
+  const [health, setHealth] = useState(null);
+  const [healthBusy, setHealthBusy] = useState(false);
+
+  async function checkHealth() {
+    setHealthBusy(true);
+    try {
+      setHealth(await call({}, '?view=health'));
+    } catch (healthError) {
+      setError(healthError.message);
+    } finally {
+      setHealthBusy(false);
+    }
+  }
   const [newEmail, setNewEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [passwordFor, setPasswordFor] = useState(null);
@@ -83,11 +96,11 @@ export default function AdminPage() {
     return () => data.subscription.unsubscribe();
   }, []);
 
-  const call = useCallback(async (init = {}) => {
+  const call = useCallback(async (init = {}, query = '') => {
     const { data } = await supabase.auth.getSession(); // fresh token on every call
     const token = data.session?.access_token;
     if (!token) throw new Error('انتهت الجلسة. سجّل الدخول مرة أخرى.');
-    const response = await fetch('/api/admin/customers', {
+    const response = await fetch(`/api/admin/customers${query}`, {
       ...init,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       cache: 'no-store',
@@ -217,6 +230,44 @@ export default function AdminPage() {
           )}
         </section>
 
+        <section className="rounded-lg border border-base-border bg-base-card p-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-semibold text-text-primary">حالة النظام</h2>
+            <button type="button" className="text-xs text-gold" disabled={healthBusy} onClick={() => void checkHealth()}>
+              {healthBusy ? 'جارٍ الفحص…' : health ? 'إعادة الفحص' : 'فحص الآن'}
+            </button>
+          </div>
+          {health && (
+            <div className="mt-3 space-y-3 text-xs leading-5">
+              <p className="text-text-secondary">
+                قاعدة البيانات: {health.database ? '✅' : '❌'} · العملاء: {health.customers ?? '—'} ·
+                أماكن واتساب: {health.capacity.used} من {health.capacity.total}
+              </p>
+              <ul className="grid gap-2 sm:grid-cols-2">
+                {health.nodes.map((node) => (
+                  <li key={node.id} className={`rounded-md border p-2 ${node.awake ? 'border-base-border' : 'border-amber-500/50'}`}>
+                    <strong className="text-text-primary">خادم {node.id}</strong> {node.awake ? '🟢 يعمل' : '🟡 نائم أو لا يرد'}
+                    <br />الأماكن: {node.used} من {node.slots} · متصل: {node.connected}
+                    {node.memoryMb ? ` · الذاكرة: ${node.memoryMb} MB` : ''}
+                    {node.awake && !node.upToDate && <><br /><span className="text-amber-300">نسخة قديمة: أعد نشره ليدعم أكثر من عميل.</span></>}
+                    {node.nodeSlots && node.slots > node.nodeSlots && <><br /><span className="text-amber-300">الخادم يسمح بـ{node.nodeSlots} فقط؛ ارفع CLUSTER_NODE_SLOTS عليه.</span></>}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-text-secondary">
+                {[
+                  ['الذكاء الاصطناعي', health.services.ai],
+                  ['البديل الاحتياطي', health.services.aiBackup],
+                  ['الصوت السحابي', health.services.cloudVoice],
+                  ['موظف الاستقبال', health.services.receptionist],
+                  ['مكالمات واتساب للأعمال', health.services.whatsappCalls],
+                  ['واتساب للأعمال (Meta)', health.services.metaBusiness],
+                ].map(([label, ok]) => `${label}: ${ok ? '✅' : '—'}`).join(' · ')}
+              </p>
+            </div>
+          )}
+        </section>
+
         <section>
           <div className="mb-2 flex items-baseline justify-between">
             <h2 className="font-semibold text-text-primary">العملاء {customers ? `(${customers.length})` : ''}</h2>
@@ -236,7 +287,7 @@ export default function AdminPage() {
                   <div><dt className="inline">أُضيف: </dt><dd className="inline">{formatDate(customer.createdAt)}</dd></div>
                   <div><dt className="inline">آخر دخول: </dt><dd className="inline">{formatDate(customer.lastSignInAt)}</dd></div>
                   <div><dt className="inline">الجهاز: </dt><dd className="inline">{customer.deviceBound ? `مرتبط منذ ${formatDate(customer.deviceBoundAt)}` : 'غير مرتبط'}</dd></div>
-                  <div><dt className="inline">واتساب: </dt><dd className="inline">{customer.whatsappNode ? `خادم ${customer.whatsappNode} (${customer.whatsappStatus})` : '—'}</dd></div>
+                  <div><dt className="inline">واتساب: </dt><dd className="inline">{customer.whatsappNode ? `خادم ${customer.whatsappNode}${customer.whatsappSlot ? ` · مكان ${customer.whatsappSlot + 1}` : ''} (${customer.whatsappStatus})` : '—'}</dd></div>
                   <div><dt className="inline">رقم موظف الاستقبال: </dt><dd className="inline" dir="ltr">{customer.receptionistNumbers?.length ? customer.receptionistNumbers.join('، ') : '—'}</dd></div>
                   <div>
                     <dt className="inline">اقتران الكمبيوتر: </dt>
