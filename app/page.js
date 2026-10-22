@@ -48,6 +48,8 @@ import { configureSpeech, getVoiceSettings, primeSpeech, speak as speakReply } f
 import VoiceSettings from '../components/VoiceSettings';
 import SendActionBanner from '../components/SendActionBanner';
 import ComputerTaskBanner from '../components/ComputerTaskBanner';
+import CallSettings from '../components/CallSettings';
+import { markDriving } from '../lib/call-assistant';
 import { dispatchAssistantAction, getAssistantCapabilities } from '../lib/assistant-actions';
 import { configureComputerTasks } from '../lib/computer-task-flow';
 import { isPhoneAgentRunning, stopPhoneAgent, updatePhoneAgentToken } from '../lib/phone-agent';
@@ -82,6 +84,7 @@ const MENU_SECTIONS = [
   { id: 'study', label: 'المذاكرة' },
   { id: 'audio', label: 'الصوت' },
   { id: 'driving', label: 'وضع القيادة' },
+  { id: 'calls', label: 'المكالمات' },
   { id: 'apps', label: 'ربط التطبيقات' },
   { id: 'computer-pairing', label: 'ربط الكمبيوتر' },
   { id: 'privacy', label: 'الخصوصية والبيانات' },
@@ -811,6 +814,15 @@ export default function Home() {
       if (audioFlowRef.current === audioFlow) audioFlowRef.current = null;
     };
   }, [customerAccess.status, authUser?.id]);
+
+  // Driving mode marks itself on the server so WhatsApp calls get the driving message (lib/call-rules.js).
+  const drivingMarkedRef = useRef(false);
+  useEffect(() => {
+    if (customerAccess.status !== 'active' || drivingMarkedRef.current === driving.active) return;
+    if (!driving.active && !drivingMarkedRef.current) return; // nothing to clear on the first render
+    drivingMarkedRef.current = driving.active;
+    void markDriving(driving.active, getAccessToken);
+  }, [driving.active, customerAccess.status]);
 
   // The Android driving service needs each refreshed token (sessions refresh hourly).
   useEffect(() => {
@@ -1987,6 +1999,8 @@ export default function Home() {
                     }}
                     onStop={() => { void drivingRef.current?.stop('user'); }}
                   />
+                ) : activeSection === 'calls' ? (
+                  <CallSettings onOpenWhatsApp={() => setActiveSection('apps')} />
                 ) : activeSection === 'computer-pairing' ? (
                   <ComputerPairingChooser />
                 ) : activeSection === 'privacy' ? (

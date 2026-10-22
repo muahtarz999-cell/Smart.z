@@ -25,6 +25,8 @@ export async function GET(request) {
     replyScope: assignment.reply_scope || 'all',
     allowedNumbers: assignment.allowed_numbers || [],
     voiceReplyMode: assignment.voice_reply_mode || 'match',
+    callReject: assignment.call_reject_enabled === true,
+    callRejectMessage: assignment.call_reject_message || '',
   };
   const node = getClusterNode(assignment.node_id);
   if (!node) return json({ ...base, status: 'ERROR', connected: false, error: CLUSTER_MESSAGES.ASSIGNED_NODE_NOT_CONFIGURED }, 503);

@@ -5,6 +5,7 @@ import android.webkit.WebView;
 import androidx.activity.OnBackPressedCallback;
 import com.getcapacitor.BridgeActivity;
 import com.smartz.assistant.driving.DrivingModePlugin;
+import com.smartz.assistant.calls.CallAssistantPlugin;
 import com.smartz.assistant.screen.ScreenControlPlugin;
 
 public class MainActivity extends BridgeActivity {
@@ -17,6 +18,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(DocumentExportPlugin.class);
         registerPlugin(SystemActionsPlugin.class);
         registerPlugin(ScreenControlPlugin.class);
+        registerPlugin(CallAssistantPlugin.class);
         super.onCreate(savedInstanceState);
 
         // The web app records the menu and its sections as history entries:

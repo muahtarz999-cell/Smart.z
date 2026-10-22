@@ -231,6 +231,11 @@ async function startSocket() {
       }
     });
 
+    sock.ev.on('call', (calls) => {
+      for (const call of Array.isArray(calls) ? calls : []) {
+        if (call?.status === 'offer') handleIncomingCall(call).catch((error) => logger.error({ err: error }, 'call handling failed'));
+      }
+    });
     sock.ev.on('contacts.upsert', (list) => contacts.upsert(list));
     sock.ev.on('contacts.update', (list) => contacts.upsert(list));
     sock.ev.on('messaging-history.set', ({ contacts: list }) => { if (list) contacts.upsert(list); });
@@ -394,6 +399,50 @@ async function handleIncoming(message) {
   await new Promise((resolve) => setTimeout(resolve, Math.min(4000, 800 + data.reply.length * 25))); // human pace
   sentMessages.remember(await current.sendMessage(jid, { text: data.reply }), 'text');
   await current.sendPresenceUpdate('paused', jid).catch(() => {});
+}
+
+// ---------------------------------------------------------------- WhatsApp calls (2026-10-22)
+// The app decides (call rules + driving mode); the node rejects and sends the message.
+// The same caller gets the message at most once per CALL_MESSAGE_COOLDOWN_MS (people redial).
+const CALL_MESSAGE_COOLDOWN_MS = 10 * 60 * 1000;
+const lastCallMessage = new Map(); // jid → time
+
+async function handleIncomingCall(call) {
+  const from = call.from;
+  if (!from || call.isGroup) return;
+
+  const response = await fetch(`${APP_URL}/api/whatsapp/cluster/call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NODE_KEY}` },
+    body: JSON.stringify({ nodeId: NODE_ID }),
+    signal: AbortSignal.timeout(8_000),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data?.success || data.reject !== true) return; // the phone rings as usual
+
+  const sock = node.sock;
+  if (!sock || node.status !== 'CONNECTED') return;
+  await sock.rejectCall(call.id, from);
+  console.log(`[node ${NODE_ID}] call rejected from=${maskJid(from)} video=${call.isVideo === true}`);
+
+  const person = contacts.people.get(from);
+  inbox.add({
+    id: `call-${call.id}`,
+    chatJid: from,
+    chatName: '',
+    senderName: person?.name || person?.notify || '',
+    senderNumber: from.endsWith('@s.whatsapp.net') ? from.split('@')[0].split(':')[0] : null,
+    isGroup: false,
+    text: `📞 مكالمة واتساب${call.isVideo ? ' فيديو' : ''} رُفضت تلقائيًا${data.message ? '، وأُرسلت رسالة' : ''}`,
+    sentAt: Date.now(),
+  });
+
+  const now = Date.now();
+  if (!data.message || now - (lastCallMessage.get(from) || 0) < CALL_MESSAGE_COOLDOWN_MS || !underReplyLimit()) return;
+  lastCallMessage.set(from, now);
+  for (const [jid, at] of lastCallMessage) if (now - at > CALL_MESSAGE_COOLDOWN_MS) lastCallMessage.delete(jid);
+  recentReplies.push(now);
+  sentMessages.remember(await sock.sendMessage(from, { text: String(data.message).slice(0, 300) }), 'text');
 }
 
 // ---------------------------------------------------------------- HTTP

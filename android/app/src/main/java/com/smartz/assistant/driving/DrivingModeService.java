@@ -22,6 +22,7 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import com.smartz.assistant.R;
+import com.smartz.assistant.calls.CallAssistant;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -117,6 +118,12 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
     public static void requestStop(String reason, boolean announce) {
         DrivingModeService service = instance;
         if (service != null) service.stopDriving(reason, announce);
+    }
+
+    /** A call is ringing (CallAssistant): said next, interrupting listening. */
+    public static void announceCall(String text) {
+        DrivingModeService service = instance;
+        if (service != null && service.running) service.notice(text);
     }
 
     public static void interruptSpeech() {
@@ -261,6 +268,14 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
                 return;
             }
 
+            if (CallAssistant.isInCall()) {
+                // On a phone call: do not listen, or the conversation would be sent as commands.
+                setPhase("paused");
+                sleep(1000);
+                lastActivity = SystemClock.elapsedRealtime();
+                continue;
+            }
+
             setPhase("listening");
             byte[] wav;
             try {
@@ -350,6 +365,10 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
             return;
         }
         JSONObject action = body.optJSONObject("action");
+        if (action != null && "call_control".equals(action.optString("type"))) {
+            executeCallControl(action);
+            return;
+        }
         if (action != null) {
             if ("service".equals(body.optString("actionDelivery"))) {
                 scheduleSend(action);
@@ -371,6 +390,14 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         put(context, "voice", config.opt("voice"));
         put(context, "confirmEverySend", confirmEverySend);
         put(context, "callByName", callByName);
+        CallAssistant.Ringing ringingCall = CallAssistant.current();
+        if (ringingCall != null) {
+            JSONObject ringingJson = new JSONObject();
+            put(ringingJson, "number", ringingCall.number);
+            put(ringingJson, "name", ringingCall.name);
+            put(ringingJson, "countryIso", CallAssistant.simCountryIso(this));
+            put(context, "ringingCall", ringingJson);
+        }
         put(context, "followUp", lastReplyEndedAt > 0 && SystemClock.elapsedRealtime() - lastReplyEndedAt < FOLLOW_UP_MS);
         synchronized (this) {
             put(context, "pendingSend", pendingAction != null);
@@ -494,6 +521,37 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
             }
         } catch (IOException | JSONException error) {
             notice("تعذر إرسال الرسالة إلى " + names + "، لا يوجد اتصال.");
+        }
+    }
+
+    /** «رد» / «ارفض» / «ارفض وقل له…» said while the phone rings (lib/drive-turn.js). */
+    private void executeCallControl(JSONObject action) {
+        String decision = action.optString("decision", "");
+        if ("answer".equals(decision)) {
+            if (!CallAssistant.answer(this)) notice("ما قدرت أرد. اسمح للتطبيق بالتحكم في المكالمات من قسم المكالمات.");
+            return;
+        }
+        if (!CallAssistant.reject(this)) {
+            notice("ما قدرت أرفض المكالمة. اسمح للتطبيق بالتحكم في المكالمات من قسم المكالمات.");
+            return;
+        }
+        String text = action.optString("message", "");
+        String jid = action.optString("jid", "");
+        if (!"reject_message".equals(decision) || text.isEmpty() || jid.isEmpty()) return;
+        try {
+            ensureFreshToken();
+            JSONObject recipient = new JSONObject();
+            recipient.put("jid", jid);
+            recipient.put("name", action.optString("name", ""));
+            recipient.put("isGroup", false);
+            JSONObject body = new JSONObject();
+            body.put("recipients", new JSONArray().put(recipient));
+            body.put("text", text);
+            body.put("manualConfirmation", false);
+            DriveClient.Result result = DriveClient.postJson(baseUrl, "/api/whatsapp/cluster/send", token, body);
+            if (!result.ok() || result.body.optInt("failed", 0) > 0) notice("رفضت المكالمة، لكن تعذر إرسال الرسالة في واتساب.");
+        } catch (IOException | JSONException error) {
+            notice("رفضت المكالمة، لكن تعذر إرسال الرسالة، لا يوجد اتصال.");
         }
     }
 

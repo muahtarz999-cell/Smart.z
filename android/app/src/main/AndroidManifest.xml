@@ -71,6 +71,11 @@
     <!-- إجراءات الهاتف من المساعد: المنبه والمؤقت، والاتصال/الرسالة باسم جهة الاتصال -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!-- مساعد المكالمات: معرفة المتصل، والرد والرفض من الإشعار أو بالصوت في وضع القيادة -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     
     <!-- أذونات النطق (Text-to-Speech) -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"
@@ -114,6 +119,25 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/smartz_accessibility" />
         </service>
+
+        <!-- مساعد المكالمات (يعمل فقط عند تفعيله أو أثناء وضع القيادة) -->
+        <receiver
+            android:name=".calls.IncomingCallReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PHONE_STATE" />
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name=".calls.CallActionReceiver"
+            android:exported="false" />
+        <activity
+            android:name=".calls.CallMessageActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
