@@ -104,7 +104,7 @@ test('planPhoneControl: needs a goal', () => {
 
 test('sanitizeCapabilities: only known flags, safe time zone', () => {
   assert.deepEqual(sanitizeCapabilities({ phoneActions: 'yes', phoneControl: true, computerRoot: root, timeZone: 'Nowhere/Zone', extra: 1 }), {
-    phoneActions: false, phoneControl: true, computerRoot: root, timeZone: 'Asia/Riyadh',
+    phoneActions: false, phoneControl: true, phoneControlEnabled: false, computerRoot: root, timeZone: 'Asia/Riyadh',
   });
   assert.equal(sanitizeCapabilities(null).phoneActions, false);
   assert.match(nowInstruction(new Date('2026-10-22T12:00:00Z')), /2026-10-22.*15:00/);
@@ -163,4 +163,30 @@ test('Windows agent: processes start only from LocalActions, never through a she
   assert.match(agent, /LocalActions\.RunCommand\(_configuration!\.CommandList/);
   assert.match(agent, /private static string ResolveSafePath/);
   assert.doesNotMatch(agent, /if \(workerCancellation\.IsCancellationRequested\)/);
+});
+
+// ---------------------------------------------------------------- self-knowledge
+
+test('self-knowledge: covers every menu section and the new abilities', async () => {
+  const { SELF_KNOWLEDGE } = await import('../lib/assistant-self-knowledge.js');
+  const page = await readFile(new URL('../app/page.js', import.meta.url), 'utf8');
+  const labels = [...page.matchAll(/\{ id: '[a-z-]+', label: '([^']+)' \}/g)].map((match) => match[1]);
+  assert.ok(labels.length >= 13);
+  for (const label of labels) assert.ok(SELF_KNOWLEDGE.includes(label.replace('ربط التطبيقات', 'ربط التطبيقات')), `missing: ${label}`);
+  for (const ability of ['إجراءات الهاتف', 'التحكم في التطبيقات', 'Groq', 'على هاتفه']) assert.ok(SELF_KNOWLEDGE.includes(ability), ability);
+});
+
+test('self-knowledge: status line reflects what is connected', async () => {
+  const { selfStatusInstruction } = await import('../lib/assistant-self-knowledge.js');
+  const line = selfStatusInstruction({ whatsapp: true, computerLabel: 'لابتوب زياد', phoneActions: true, phoneControl: true, phoneControlEnabled: false });
+  assert.match(line, /WhatsApp مربوط/);
+  assert.match(line, /لابتوب زياد/);
+  assert.match(line, /يحتاج تفعيلًا/);
+  assert.match(selfStatusInstruction({}), /غير مربوط.*لا يوجد كمبيوتر/);
+});
+
+test('self-knowledge: added for the owner, never when replying to others on WhatsApp', async () => {
+  const source = await readFile(new URL('../lib/assistant-response.js', import.meta.url), 'utf8');
+  assert.match(source, /const withOwner = !String\(options\.channel \|\| ''\)\.startsWith\('whatsapp'\)/);
+  assert.match(source, /withOwner \? SELF_KNOWLEDGE : ''/);
 });

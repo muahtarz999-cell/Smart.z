@@ -718,7 +718,7 @@ export default function Home() {
       }),
       getContext: async () => ({
         ...((await Promise.resolve(getAssistantContext()).catch(() => ({}))) || {}),
-        capabilities: getAssistantCapabilities(),
+        capabilities: await getAssistantCapabilities(),
       }),
       onAction: (action) => { void runAssistantAction(action); },
       interceptTranscript: (text) => interceptLocally(text),

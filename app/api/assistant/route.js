@@ -17,6 +17,7 @@ import {
   sanitizeCapabilities,
 } from '../../../lib/assistant-tools';
 import { activeComputerDevice, createComputerTaskForUser } from '../../../lib/computer-assistant';
+import { selfStatusInstruction } from '../../../lib/assistant-self-knowledge';
 
 
 const MAX_MESSAGE_CHARACTERS = 4000;
@@ -69,6 +70,13 @@ export async function POST(request) {
       inboxContext: body.inboxContext, // WhatsApp messages stored on the phone, only when asked about them
       tools,
       toolInstructions,
+      statusInstruction: selfStatusInstruction({
+        whatsapp: Boolean(node),
+        computerLabel: computer?.label || null,
+        phoneActions: capabilities.phoneActions,
+        phoneControl: capabilities.phoneControl,
+        phoneControlEnabled: capabilities.phoneControlEnabled,
+      }),
       whatsappLinked: Boolean(node),
     });
 
