@@ -329,13 +329,32 @@ function createSession(slot) {
   function recordInbox(message) {
     try {
       const jid = message.key?.remoteJid;
-      if (message.key?.fromMe || !jid || !message.key.id) return;
+      if (!jid || !message.key.id) return;
       if (jid === 'status@broadcast' || jid.endsWith('@newsletter') || jid.endsWith('@broadcast')) return;
       const sentAt = Number(message.messageTimestamp || 0) * 1000 || Date.now();
       if (Date.now() - sentAt > MAX_INBOX_AGE_MS) return; // old history synced at link time
       const text = describeMessage(message);
       if (!text) return;
       const isGroup = jid.endsWith('@g.us');
+      if (message.key.fromMe) {
+        // The user's own 1:1 messages (2026-10-22): the phone only checks them for
+        // promises (lib/commitments.js) and never stores them with the inbox.
+        // Messages this app sent for the user (sentMessages) are skipped.
+        if (isGroup || sentMessages.kindOf(message.key.id)) return;
+        const person = contacts.people.get(jid);
+        inbox.add({
+          id: message.key.id,
+          chatJid: jid,
+          chatName: person?.name || person?.notify || '',
+          senderName: person?.name || person?.notify || '',
+          senderNumber: jid.endsWith('@s.whatsapp.net') ? jid.split('@')[0].split(':')[0] : null,
+          isGroup: false,
+          outgoing: true,
+          text,
+          sentAt,
+        });
+        return;
+      }
       const senderJid = isGroup ? message.key.participant : jid;
       const person = senderJid ? contacts.people.get(senderJid) : null;
       inbox.add({

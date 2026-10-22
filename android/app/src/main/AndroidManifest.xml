@@ -79,6 +79,8 @@
     <!-- مساعد المكالمات: معرفة المتصل، والرد والرفض من الإشعار أو بالصوت في وضع القيادة -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <!-- Day summary («لخّص يومي»), read only when the user asks. -->
+    <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     
     <!-- أذونات النطق (Text-to-Speech) -->

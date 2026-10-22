@@ -63,6 +63,10 @@ import { DRIVING_MESSAGES, isDrivingStartCommand, isDrivingStopCommand } from '.
 import { addMessage, getRecentMessages } from '../lib/conversation';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import { inboxContextFor, listInboxMessages, runHousekeeping, syncInbox } from '../lib/whatsapp-inbox-store';
+import { commitmentsForQuestion } from '../lib/commitments-store';
+import { isCommitmentQuestion } from '../lib/commitments';
+import { isDaySummaryRequest } from '../lib/day-summary';
+import { summarizeDay } from '../lib/day-summary-client';
 import { buildInboxContext } from '../lib/whatsapp-inbox';
 import InboxSettings from '../components/InboxSettings';
 import ComputerPairingChooser from '../components/ComputerPairingChooser';
@@ -631,7 +635,23 @@ export default function Home() {
     }
   }
 
-  /** Utterances handled on the device without the assistant: quiz answers, "تراجع", "اكتب لي عقد". */
+  async function runDaySummary(text) {
+    setReply('أجهّز ملخص يومك…');
+    try {
+      const summary = await summarizeDay(text, {
+        getAccessToken,
+        responseStyle: profileRef.current.responseStyle,
+        language: profileRef.current.language,
+      });
+      say(summary);
+      addMessage('user', text).catch(() => {});
+      addMessage('assistant', summary).catch(() => {});
+    } catch (error) {
+      say(error?.message || 'تعذّر إعداد الملخص الآن.');
+    }
+  }
+
+  /** Utterances handled on the device without the assistant: quiz answers, "تراجع", "اكتب لي عقد", «لخّص يومي». */
   function interceptLocally(text) {
     const drivingMode = drivingRef.current;
     if (drivingMode?.active && isDrivingStopCommand(text)) {
@@ -655,6 +675,10 @@ export default function Home() {
     if (isPhoneAgentRunning() && /^[أا]?(وقف|توقف)\s*(التحكم|المهم[ةه])?[.!]?$/.test(text.trim())) {
       void stopPhoneAgent();
       say('أوقفت التحكم في التطبيقات.');
+      return true;
+    }
+    if (isDaySummaryRequest(text)) {
+      void runDaySummary(text);
       return true;
     }
     const documentCommand = parseDocumentCommand(text);
@@ -728,6 +752,8 @@ export default function Home() {
       interceptTranscript: (text) => interceptLocally(text),
       prepareAttachment,
       getInboxContext: (message) => inboxContextFor(message, getAccessToken),
+      // Hidden promises memory: read only when the user asks about promises.
+      getCommitments: (message) => (isCommitmentQuestion(message) ? commitmentsForQuestion(getAccessToken) : undefined),
       onTurnComplete: () => {
         // Runs in the background; learning must never slow down or break a conversation.
         learnFromRecentConversation({ getAccessToken })

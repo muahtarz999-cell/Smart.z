@@ -88,6 +88,7 @@ export async function POST(request) {
       documentContext: body.documentContext, // passages from a local file, chosen on the device
       legalContext: body.legalContext, // selected articles from the on-device legal library
       inboxContext: body.inboxContext, // WhatsApp messages stored on the phone, only when asked about them
+      commitments: Array.isArray(body.commitments) ? body.commitments.slice(0, 60) : undefined, // only when asked about promises
       tools,
       toolInstructions,
       statusInstruction: selfStatusInstruction({
