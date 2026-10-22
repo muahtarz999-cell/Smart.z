@@ -390,6 +390,8 @@ public class DrivingModeService extends Service implements BubbleOverlay.Actions
         put(context, "voice", config.opt("voice"));
         put(context, "confirmEverySend", confirmEverySend);
         put(context, "callByName", callByName);
+        put(context, "timeZone", config.opt("timeZone")); // "now" for the assistant (lib/assistant-context.js)
+        put(context, "coords", config.opt("coords"));     // only when precise location is on
         CallAssistant.Ringing ringingCall = CallAssistant.current();
         if (ringingCall != null) {
             JSONObject ringingJson = new JSONObject();

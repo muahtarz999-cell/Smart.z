@@ -1,12 +1,19 @@
 import { json } from '../../../lib/api-response';
-import { AssistantResponseError, generateAssistantTurn, WHATSAPP_SEND_TOOL } from '../../../lib/assistant-response';
+import {
+  answerWithWebSearch,
+  AssistantResponseError,
+  generateAssistantTurn,
+  WEB_SEARCH_INSTRUCTION,
+  WEB_SEARCH_TOOL,
+  WHATSAPP_SEND_TOOL,
+} from '../../../lib/assistant-response';
+import { resolveUserLocation } from '../../../lib/assistant-context';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../lib/customer-access';
 import { linkedWhatsAppNode, nodeContactSearch, planSendCommand } from '../../../lib/whatsapp-commands';
 import { DRIVING_MESSAGES } from '../../../lib/driving-commands';
 import {
   COMPUTER_INSTRUCTION,
   COMPUTER_TASK_TOOL,
-  nowInstruction,
   PHONE_ACTION_INSTRUCTION,
   PHONE_ACTION_TOOL,
   PHONE_CONTROL_INSTRUCTION,
@@ -43,21 +50,34 @@ export async function POST(request) {
   if (!message) return json({ error: true, message: 'A non-empty message is required.' }, 400);
 
   const capabilities = sanitizeCapabilities(body.capabilities);
-  const [node, computer] = await Promise.all([
+  const [node, computer, location] = await Promise.all([
     linkedWhatsAppNode(access),
     activeComputerDevice(access),
+    resolveUserLocation(request, capabilities.coords).catch(() => null),
   ]);
 
-  const tools = [];
-  const toolInstructions = [];
+  const tools = [WEB_SEARCH_TOOL];
+  const toolInstructions = [WEB_SEARCH_INSTRUCTION];
   if (node) tools.push(WHATSAPP_SEND_TOOL);
   if (computer) { tools.push(COMPUTER_TASK_TOOL); toolInstructions.push(COMPUTER_INSTRUCTION); }
   if (capabilities.phoneActions) { tools.push(PHONE_ACTION_TOOL); toolInstructions.push(PHONE_ACTION_INSTRUCTION); }
   if (capabilities.phoneControl) { tools.push(PHONE_CONTROL_TOOL); toolInstructions.push(PHONE_CONTROL_INSTRUCTION); }
-  if (capabilities.phoneActions || computer) toolInstructions.push(nowInstruction(new Date(), capabilities.timeZone));
+
+  const conversation = {
+    history: body.history, // sanitised inside: last 6 turns, user/assistant only
+    responseStyle: body.responseStyle,
+    language: body.language,
+    channel: ['voice', 'driving'].includes(body.channel) ? body.channel : 'text',
+    profile: body.profile,
+    memories: body.memories,
+    timeZone: capabilities.timeZone,
+    location,
+  };
 
   try {
     const turn = await generateAssistantTurn(message, {
+      timeZone: capabilities.timeZone,
+      location,
       history: body.history, // sanitised inside: last 6 turns, user/assistant only
       responseStyle: body.responseStyle,
       language: body.language,
@@ -84,6 +104,12 @@ export async function POST(request) {
     if (send && node) {
       const plan = await planSendCommand(send.args, nodeContactSearch(node));
       return json({ reply: sendReplyFor(plan, body), action: plan.action || null });
+    }
+
+    const searchCall = turn.toolCalls.find((call) => call.name === 'web_search');
+    if (searchCall) {
+      const query = typeof searchCall.args?.query === 'string' ? searchCall.args.query.slice(0, 300) : '';
+      return json({ reply: await answerWithWebSearch(message, query, conversation) });
     }
 
     const computerCall = turn.toolCalls.find((call) => call.name === 'computer_task');

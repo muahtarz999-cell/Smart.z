@@ -50,6 +50,7 @@ import SendActionBanner from '../components/SendActionBanner';
 import ComputerTaskBanner from '../components/ComputerTaskBanner';
 import CallSettings from '../components/CallSettings';
 import { markDriving } from '../lib/call-assistant';
+import { currentCoords, deviceTimeZone, preciseLocationEnabled, setPreciseLocation } from '../lib/location';
 import { dispatchAssistantAction, getAssistantCapabilities } from '../lib/assistant-actions';
 import { configureComputerTasks } from '../lib/computer-task-flow';
 import { isPhoneAgentRunning, stopPhoneAgent, updatePhoneAgentToken } from '../lib/phone-agent';
@@ -766,6 +767,9 @@ export default function Home() {
         return {
           baseUrl: window.location.origin,
           ...session,
+          // "Now" and "here" for driving turns (lib/drive-turn.js); coords only when precise location is on.
+          timeZone: deviceTimeZone(),
+          coords: await currentCoords(),
           history: history.map(({ role, content }) => ({ role, content })),
           profile: context.profile || null,
           memories: Array.isArray(context.memories) ? context.memories : [],
@@ -1539,6 +1543,8 @@ export default function Home() {
                       />
                     </label>
 
+                    <PreciseLocationSetting />
+
                     <fieldset className="space-y-3">
                       <legend className="text-sm text-text-primary">أسلوب الرد</legend>
                       <div className="grid grid-cols-3 gap-2" role="group" aria-label="أسلوب الرد">
@@ -2020,6 +2026,7 @@ export default function Home() {
                       </p>
                       <p className="mt-2">تُرسل الرسائل النصية والتسجيلات الصوتية إلى Groq للمعالجة وتوليد الرد. إذا تعذّر Groq، قد يُرسل نص الطلب إلى OpenRouter كبديل لتوليد الردود النصية؛ لا تُرسل الملاحظات أو المهام أو الذكريات المحلية. يُنطق رد المساعد بصوت عربي محلي من الجهاز، ولا يُرسل النص إلى خدمة صوت خارجية.</p>
                       <p className="mt-2">عند طلب «التحكم في التطبيقات» على أندرويد، تُرسل النصوص الظاهرة على شاشة التطبيق المستهدف إلى Groq (أو OpenRouter كبديل) في كل خطوة لاختيار الخطوة التالية، طوال تنفيذ المهمة فقط. لا يُرسل محتوى حقول كلمات المرور، ويمكنك الإيقاف من الإشعار في أي وقت.</p>
+                      <p className="mt-2">لمعرفة الوقت والمكان: يُرسل مع كل سؤال تاريخ اليوم ومنطقتك الزمنية واسم مدينتك فقط، تقديرًا من اتصالك بالإنترنت، أو بدقة إذا فعّلت «موقعي الدقيق» في «ملفي». عند الدقة تُرسل إحداثيات تقريبية (بدقة نحو كيلومتر) إلى خادم التطبيق ليحوّلها إلى اسم مدينة عبر OpenStreetMap، ولا تصل الإحداثيات إلى مزود الذكاء الاصطناعي. وعند البحث في الويب تُرسل عبارة البحث إلى Groq أو OpenRouter.</p>
                       <p className="mt-2">عند تأكيد فتح مسودة WhatsApp أو X، يُشارك الرقم ونص المسودة مع الخدمة الخارجية لفتحها؛ لا يتم الإرسال أو النشر إلا بضغطك داخل التطبيق نفسه.</p>
                     </div>
 
@@ -2119,5 +2126,42 @@ export default function Home() {
         </div>
       )}
     </main>
+  );
+}
+
+/** «ملفي»: lets the assistant know the user's city precisely (GPS → city name only). */
+function PreciseLocationSetting() {
+  const [enabled, setEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  useEffect(() => { setEnabled(preciseLocationEnabled()); }, []);
+
+  async function toggle() {
+    setBusy(true);
+    setNote('');
+    try {
+      setEnabled(await setPreciseLocation(!enabled));
+    } catch {
+      setEnabled(false);
+      setNote('لم يُسمح بالموقع. فعّله من إعدادات الجهاز ثم أعد المحاولة.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <label className="flex items-center justify-between gap-3 rounded-lg border border-base-border p-3">
+        <span className="text-xs leading-5 text-text-secondary">
+          <span className="block text-sm text-text-primary">موقعي الدقيق</span>
+          ليعرف المساعد مدينتك بدقة (الطقس، مواقيت الصلاة، الأماكن القريبة). يُرسل اسم المدينة فقط. بدونه يقدّرها من اتصالك بالإنترنت.
+        </span>
+        <button type="button" role="switch" aria-checked={enabled} disabled={busy} onClick={() => void toggle()}
+          className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors disabled:opacity-50 ${enabled ? 'bg-gold' : 'bg-base-border'}`}>
+          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${enabled ? 'right-0.5' : 'right-[22px]'}`} />
+        </button>
+      </label>
+      {note && <p role="alert" className="text-xs text-amber-300">{note}</p>}
+    </div>
   );
 }

@@ -1,5 +1,13 @@
 import { json } from '../../../../lib/api-response';
-import { AssistantResponseError, generateAssistantTurn, WHATSAPP_SEND_TOOL } from '../../../../lib/assistant-response';
+import {
+  answerWithWebSearch,
+  AssistantResponseError,
+  generateAssistantTurn,
+  WEB_SEARCH_INSTRUCTION,
+  WEB_SEARCH_TOOL,
+  WHATSAPP_SEND_TOOL,
+} from '../../../../lib/assistant-response';
+import { resolveUserLocation, sanitizeCoords, validTimeZone } from '../../../../lib/assistant-context';
 import { synthesizeWithFallback } from '../../../../lib/cloud-tts';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../lib/customer-access';
 import { runDriveTurn } from '../../../../lib/drive-turn';
@@ -34,9 +42,18 @@ export async function POST(request) {
   }
   if (!audio || typeof audio === 'string') return json({ error: true, code: 'NO_AUDIO', message: 'لم يصل الصوت.' }, 400);
 
-  const node = await linkedWhatsAppNode(access);
+  const [node, location] = await Promise.all([
+    linkedWhatsAppNode(access),
+    resolveUserLocation(request, sanitizeCoords(context.coords)).catch(() => null),
+  ]);
   try {
     const result = await runDriveTurn({ audio, context }, {
+      // "Now" and "here" for the driver, and the web for anything recent (2026-10-22).
+      timeZone: validTimeZone(context.timeZone) ? context.timeZone : 'Asia/Riyadh',
+      location,
+      webSearchTool: WEB_SEARCH_TOOL,
+      webSearchInstruction: WEB_SEARCH_INSTRUCTION,
+      webSearch: (question, query, options) => answerWithWebSearch(question, query, options),
       transcribe: (blob) => transcribeAudio(blob, blob.type || 'audio/wav'),
       assistantTurn: generateAssistantTurn,
       sendTool: WHATSAPP_SEND_TOOL,

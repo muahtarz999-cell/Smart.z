@@ -104,8 +104,9 @@ test('planPhoneControl: needs a goal', () => {
 
 test('sanitizeCapabilities: only known flags, safe time zone', () => {
   assert.deepEqual(sanitizeCapabilities({ phoneActions: 'yes', phoneControl: true, computerRoot: root, timeZone: 'Nowhere/Zone', extra: 1 }), {
-    phoneActions: false, phoneControl: true, phoneControlEnabled: false, computerRoot: root, timeZone: 'Asia/Riyadh',
+    phoneActions: false, phoneControl: true, phoneControlEnabled: false, computerRoot: root, timeZone: 'Asia/Riyadh', coords: null,
   });
+  assert.deepEqual(sanitizeCapabilities({ coords: { lat: 24.71362, lon: 46.67531 } }).coords, { lat: 24.71, lon: 46.68 });
   assert.equal(sanitizeCapabilities(null).phoneActions, false);
   assert.match(nowInstruction(new Date('2026-10-22T12:00:00Z')), /2026-10-22.*15:00/);
 });
