@@ -11,6 +11,7 @@ import {
   getConfiguredClusterNodes,
   releaseNodeForUser,
 } from '../../../../lib/whatsapp-cluster';
+import { replacePhoneNumbers } from '../../../../lib/receptionist-store';
 
 
 // Effectively permanent: Supabase Auth refuses sign-in and token refresh while banned.
@@ -41,17 +42,19 @@ export async function GET(request) {
   if (gate.response) return gate.response;
   const { service, admin } = gate;
 
-  const [usersResult, registryResult, nodesResult] = await Promise.all([
+  const [usersResult, registryResult, nodesResult, numbersResult] = await Promise.all([
     service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
     service.from('customer_registry').select('*'),
     service.from('whatsapp_tenant_nodes').select('user_id, node_id, status'),
+    // Optional: absent until the receptionist migration is applied.
+    service.from('ai_receptionist_numbers').select('number, user_id, channel'),
   ]);
   if (usersResult.error) return failed('list_users', usersResult.error);
   if (registryResult.error) return failed('list_registry', registryResult.error);
   if (nodesResult.error) return failed('list_nodes', nodesResult.error);
 
   return json({
-    customers: mergeCustomerRows(usersResult.data.users, registryResult.data, nodesResult.data, admin.id),
+    customers: mergeCustomerRows(usersResult.data.users, registryResult.data, nodesResult.data, admin.id, numbersResult.error ? [] : numbersResult.data),
     whatsappCapacity: { used: nodesResult.data.length, total: getConfiguredClusterNodes().length },
   });
 }
@@ -129,6 +132,14 @@ export async function POST(request) {
       const { error } = await service.auth.admin.updateUserById(userId, { password: checked.password });
       if (error) return failed('set_password', error);
       return json({ success: true });
+    }
+
+    if (action === 'set_receptionist_numbers') {
+      const result = await replacePhoneNumbers(service, userId, checked.numbers);
+      if (!result.ok) {
+        return json({ error: true, code: 'NUMBER_TAKEN', message: `الرقم ${result.conflict} مسجّل لعميل آخر.` }, 409);
+      }
+      return json({ success: true, numbers: checked.numbers });
     }
 
     if (action === 'disconnect_whatsapp') {

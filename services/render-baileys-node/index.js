@@ -27,6 +27,7 @@ import { ContactBook } from './contacts.js';
 import { describeMessage, Inbox, MAX_INBOX_AGE_MS, unwrapMessage } from './inbox.js';
 import { toVoiceNote } from './voice-note.js';
 import { SentCache } from './sent-cache.js';
+import { CallMonitor } from './call-monitor.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const NODE_ID = Number(process.env.CLUSTER_NODE_ID || 0);
@@ -60,6 +61,20 @@ const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
 const contacts = new ContactBook({ supabase, nodeId: NODE_ID, dir: process.cwd() });
 const inbox = new Inbox(); // memory only: waits for the phone to collect, then dropped
 const sentMessages = new SentCache(); // answers recipients' retry requests (see sent-cache.js)
+// AI receptionist: follows calls the app accepted with OpenAI (see call-monitor.js). Off without OPENAI_API_KEY.
+const callMonitor = new CallMonitor({
+  apiKey: (process.env.OPENAI_API_KEY || '').trim(),
+  logger,
+  report: async (payload) => {
+    const response = await fetch(`${APP_URL}/api/receptionist/call-log`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NODE_KEY}` },
+      body: JSON.stringify({ nodeId: NODE_ID, ...payload }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    if (!response.ok) logger.warn({ status: response.status }, 'call log not accepted');
+  },
+});
 
 // Safe identifiers for logs: message id and the last 4 digits only, never content.
 function maskJid(jid) {
@@ -557,6 +572,24 @@ app.post('/api/reset', async (_req, res) => {
 });
 
 // Contact lookup for voice commands ("send Ahmad ..."). Groups only when asked for explicitly.
+// The app accepted an AI-receptionist call and asks this node to follow it.
+app.post('/api/calls/monitor', (req, res) => {
+  const { callId, userId, channel, callerNumber, transferNumber } = req.body || {};
+  if (typeof callId !== 'string' || !callId || callId.length > 120 || typeof userId !== 'string') {
+    return res.status(400).json({ success: false, error: 'INVALID_CALL' });
+  }
+  if (!callMonitor.enabled) return res.status(503).json({ success: false, error: 'OPENAI_NOT_CONFIGURED' });
+  const started = callMonitor.follow({
+    callId,
+    userId,
+    channel: channel === 'whatsapp' ? 'whatsapp' : 'phone',
+    callerNumber: String(callerNumber || '').replace(/\D/g, '').slice(0, 15),
+    transferNumber: String(transferNumber || '').replace(/\D/g, '').slice(0, 15),
+  });
+  console.log(`[node ${NODE_ID}] receptionist call ${started ? 'followed' : 'skipped'}`);
+  return res.json({ success: started });
+});
+
 app.get('/api/contacts/search', (req, res) => {
   const query = String(req.query.q || '').slice(0, 80);
   const groups = req.query.groups === '1';

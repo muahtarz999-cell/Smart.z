@@ -8,9 +8,10 @@ import {
   setCallAssistantEnabled,
   setCallAssistantMessage,
 } from '../lib/call-assistant';
+import ReceptionistSettings from './ReceptionistSettings';
 
 /** «المكالمات»: switch the call assistant on or off. Always on while driving mode runs. */
-export default function CallSettings({ onOpenWhatsApp }) {
+export default function CallSettings({ onOpenWhatsApp, getAccessToken }) {
   const [available, setAvailable] = useState(false);
   const [status, setStatus] = useState(null);
   const [draft, setDraft] = useState(null);
@@ -103,6 +104,8 @@ export default function CallSettings({ onOpenWhatsApp }) {
             className="min-h-9 rounded-md border border-base-border px-3 text-xs text-text-primary">فتح إعدادات واتساب</button>
         )}
       </section>
+
+      {getAccessToken && <ReceptionistSettings getAccessToken={getAccessToken} />}
 
       {error && <p role="alert" className="text-xs text-amber-300">{error}</p>}
     </div>

@@ -32,6 +32,7 @@ const DONE = {
   reset_device: 'فُك ربط الجهاز.',
   set_password: 'تغيّرت كلمة المرور.',
   disconnect_whatsapp: 'فُصل واتساب.',
+  set_receptionist_numbers: 'حُفظت أرقام موظف الاستقبال.',
   delete: 'حُذف العميل.',
 };
 
@@ -236,6 +237,7 @@ export default function AdminPage() {
                   <div><dt className="inline">آخر دخول: </dt><dd className="inline">{formatDate(customer.lastSignInAt)}</dd></div>
                   <div><dt className="inline">الجهاز: </dt><dd className="inline">{customer.deviceBound ? `مرتبط منذ ${formatDate(customer.deviceBoundAt)}` : 'غير مرتبط'}</dd></div>
                   <div><dt className="inline">واتساب: </dt><dd className="inline">{customer.whatsappNode ? `خادم ${customer.whatsappNode} (${customer.whatsappStatus})` : '—'}</dd></div>
+                  <div><dt className="inline">رقم موظف الاستقبال: </dt><dd className="inline" dir="ltr">{customer.receptionistNumbers?.length ? customer.receptionistNumbers.join('، ') : '—'}</dd></div>
                   <div>
                     <dt className="inline">اقتران الكمبيوتر: </dt>
                     <dd className={customer.allowComputerPairing ? 'inline text-emerald-300' : 'inline text-text-secondary'}>
@@ -265,6 +267,15 @@ export default function AdminPage() {
                   {customer.whatsappNode && (
                     <button type="button" className={plain} disabled={busy} onClick={() => run('disconnect_whatsapp', { userId: customer.id })}>فصل واتساب</button>
                   )}
+                  <button type="button" className={plain} disabled={busy}
+                    onClick={() => {
+                      const current = (customer.receptionistNumbers || []).join(', ');
+                      const value = window.prompt('أرقام المزود لموظف الاستقبال (دولية، مفصولة بفواصل). اتركه فارغًا للإزالة:', current);
+                      if (value === null) return;
+                      run('set_receptionist_numbers', { userId: customer.id, numbers: value.split(/[\s,،]+/).filter(Boolean) });
+                    }}>
+                    رقم موظف الاستقبال
+                  </button>
                   {!customer.isSelf && (
                     <button type="button" className={danger} disabled={busy} onClick={() => run('delete', { userId: customer.id })}>حذف</button>
                   )}

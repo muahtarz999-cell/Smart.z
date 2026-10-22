@@ -2000,7 +2000,7 @@ export default function Home() {
                     onStop={() => { void drivingRef.current?.stop('user'); }}
                   />
                 ) : activeSection === 'calls' ? (
-                  <CallSettings onOpenWhatsApp={() => setActiveSection('apps')} />
+                  <CallSettings onOpenWhatsApp={() => setActiveSection('apps')} getAccessToken={getAccessToken} />
                 ) : activeSection === 'computer-pairing' ? (
                   <ComputerPairingChooser />
                 ) : activeSection === 'privacy' ? (
