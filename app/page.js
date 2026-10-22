@@ -58,6 +58,7 @@ import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import { inboxContextFor, listInboxMessages, runHousekeeping, syncInbox } from '../lib/whatsapp-inbox-store';
 import { buildInboxContext } from '../lib/whatsapp-inbox';
 import InboxSettings from '../components/InboxSettings';
+import ComputerPairingChooser from '../components/ComputerPairingChooser';
 import {
   getTaskReminderStatus,
   synchronizeTaskReminders,
@@ -1956,17 +1957,7 @@ export default function Home() {
                     onStop={() => { void drivingRef.current?.stop('user'); }}
                   />
                 ) : activeSection === 'computer-pairing' ? (
-                  <div className="space-y-4">
-                    <p className="text-sm leading-7 text-text-secondary">
-                      امسح رمز الاقتران الظاهر على الكمبيوتر وراجع اسمه قبل الموافقة. يلزم تسجيل الدخول وصلاحية ربط الكمبيوتر.
-                    </p>
-                    <a
-                      href="/computer/approve"
-                      className="inline-flex min-h-12 items-center rounded-lg bg-gold px-5 text-sm font-semibold text-base-bg"
-                    >
-                      فتح ماسح رمز الكمبيوتر
-                    </a>
-                  </div>
+                  <ComputerPairingChooser />
                 ) : activeSection === 'privacy' ? (
                   <div className="space-y-7">
                     <div>

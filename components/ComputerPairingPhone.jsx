@@ -272,6 +272,11 @@ export default function ComputerPairingPhone() {
           امسح الرمز الظاهر على الكمبيوتر. لن يتم الاقتران قبل موافقتك الصريحة.
           إذا كان هناك كمبيوتر نشط، سيطلب التطبيق تأكيد استبداله بشكل منفصل.
         </p>
+        <p className="mt-2 text-sm">
+          <a href="/computer/pair" className="text-gold hover:underline">
+            هل أنت على الكمبيوتر؟ اعرض رمز QR بدل فتح الكاميرا
+          </a>
+        </p>
 
         {!authReady ? <p className="mt-5 text-sm text-text-secondary">جارٍ التحقق من تسجيل الدخول…</p> : null}
         {authReady && !accessToken ? (

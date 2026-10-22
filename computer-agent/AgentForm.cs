@@ -368,7 +368,7 @@ internal sealed class AgentForm : Form
                 }
                 catch (OperationCanceledException) when (executionCancellation.IsCancellationRequested)
                 {
-                    if (workerCancellation.IsCancellationRequested)
+                    if (cancellationToken.IsCancellationRequested)
                     {
                         try
                         {

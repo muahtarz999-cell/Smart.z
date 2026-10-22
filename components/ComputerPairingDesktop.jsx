@@ -243,6 +243,11 @@ export default function ComputerPairingDesktop() {
           ينشئ هذا المتصفح مفتاح Ed25519 محليًا. لا يُرفع المفتاح الخاص؛ يُرسل المفتاح العام فقط،
           ويُحفظ المفتاح الخاص غير القابل للتصدير في تخزين المتصفح بعد إنشاء الجلسة.
         </p>
+        <p className="mt-2 text-sm">
+          <a href="/computer/approve" className="text-gold hover:underline">
+            هل أنت على الهاتف؟ افتح الماسح لمسح رمز الكمبيوتر
+          </a>
+        </p>
         {phase === 'idle' || phase === 'creating' ? (
           <form onSubmit={startPairing} className="mt-6 space-y-4">
             <label className="block text-sm">
