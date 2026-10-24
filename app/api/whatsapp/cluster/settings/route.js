@@ -27,6 +27,19 @@ export async function POST(request) {
   if (typeof body?.driving === 'boolean') {
     changes.driving_until = body.driving ? new Date(Date.now() + DRIVING_FLAG_MS).toISOString() : null;
   }
+  if (body?.voiceSettings && typeof body.voiceSettings === 'object') {
+    const provider = typeof body.voiceSettings.provider === 'string'
+      ? body.voiceSettings.provider.slice(0, 40)
+      : 'auto';
+    const voices = body.voiceSettings.voices && typeof body.voiceSettings.voices === 'object'
+      ? Object.fromEntries(
+          Object.entries(body.voiceSettings.voices)
+            .filter(([k, v]) => typeof k === 'string' && typeof v === 'string')
+            .map(([k, v]) => [k.slice(0, 40), v.slice(0, 80)])
+        )
+      : {};
+    changes.voice_settings = { provider, voices };
+  }
   if (!Object.keys(changes).length) return json({ success: false, error: 'لا توجد إعدادات صالحة للحفظ.' }, 400);
 
   const { data, error } = await access.client
@@ -45,5 +58,6 @@ export async function POST(request) {
     voiceReplyMode: data.voice_reply_mode || 'match',
     callReject: data.call_reject_enabled === true,
     callRejectMessage: data.call_reject_message || '',
+    voiceSettings: data.voice_settings || null,
   });
 }
