@@ -1,4 +1,3 @@
-```js
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test, { mock } from 'node:test';
@@ -291,4 +290,3 @@ test('undo set to 0 sends immediately; "confirm every send" always waits', async
   assert.equal(actions.getPendingSend().status, 'confirm');
   assert.equal(sends.length, 0);
 });
-```
