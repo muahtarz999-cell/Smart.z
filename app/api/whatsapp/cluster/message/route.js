@@ -90,9 +90,20 @@ export async function POST(request) {
   if (asVoice) {
     try {
       voice = [];
+      const customerVoice = tenant?.voice_settings || {};
+      const preferredProvider = typeof customerVoice.provider === 'string' && customerVoice.provider !== 'auto'
+        ? customerVoice.provider
+        : undefined;
+      const customerVoices = customerVoice.voices && typeof customerVoice.voices === 'object'
+        ? customerVoice.voices
+        : {};
+
       let provider;
       for (const chunk of splitForSpeech(reply).slice(0, MAX_VOICE_CHUNKS)) {
-        const result = await synthesizeWithFallback(chunk, { provider });
+        const options = provider
+          ? { provider, voices: customerVoices, strict: true }
+          : { provider: preferredProvider, voices: customerVoices, strict: false };
+        const result = await synthesizeWithFallback(chunk, options);
         provider = result.provider;
         voice.push({ data: bytesToBase64(result.audio), contentType: result.contentType });
       }

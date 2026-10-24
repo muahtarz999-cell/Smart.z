@@ -51,7 +51,8 @@ export async function POST(request) {
   if (!node) return json({ success: false, code: 'NOT_LINKED', error: 'اربط واتساب الشخصي أولاً.' }, 409);
 
   // Voice message: spoken once, the same note goes to every recipient. If no voice answers, the text goes instead.
-  const voice = body.asVoice === true && text && !document ? await voiceNoteParts(text, body.voice) : null;
+  const clientVoice = (body?.voice && typeof body.voice === 'object') ? body.voice : (assignment?.voice_settings || {});
+  const voice = body.asVoice === true && text && !document ? await voiceNoteParts(text, clientVoice) : null;
 
   const results = [];
   for (const recipient of recipients) {
