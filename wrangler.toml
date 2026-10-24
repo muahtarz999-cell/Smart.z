@@ -7,3 +7,6 @@ workers_dev = true
 [assets]
 directory = ".open-next/assets"
 binding = "ASSETS"
+
+[vars]
+OPENAI_REALTIME_MODEL = "gpt-realtime"
