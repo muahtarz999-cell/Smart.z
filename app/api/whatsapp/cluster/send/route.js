@@ -1,6 +1,6 @@
 import { json } from '../../../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
-import { callNode, getClusterNode, getUserAssignment } from '../../../../../lib/whatsapp-cluster';
+import { callNode, getUserAssignment, nodeForAssignment } from '../../../../../lib/whatsapp-cluster';
 import { MAX_RECIPIENTS_WITHOUT_MANUAL_CONFIRMATION } from '../../../../../lib/whatsapp-commands';
 import { synthesizeWithFallback } from '../../../../../lib/cloud-tts';
 import { voiceReply } from '../../../../../lib/drive-turn';
@@ -47,7 +47,7 @@ export async function POST(request) {
   }
 
   const assignment = await getUserAssignment(access.user.id, access.client).catch(() => null);
-  const node = assignment ? getClusterNode(assignment.node_id) : null;
+  const node = nodeForAssignment(assignment);
   if (!node) return json({ success: false, code: 'NOT_LINKED', error: 'اربط واتساب الشخصي أولاً.' }, 409);
 
   // Voice message: spoken once, the same note goes to every recipient. If no voice answers, the text goes instead.

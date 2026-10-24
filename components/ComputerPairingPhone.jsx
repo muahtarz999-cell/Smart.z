@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { installDeviceHeader } from '../lib/device-lock';
 import { parseComputerPairingQr } from '../lib/computer-pairing-client';
+import { buildTaskPayload, COMPUTER_TASK_LABELS, readComputerRoot, rememberComputerRoot, taskNeedsRoot } from '../lib/computer-tasks-client';
 
 export default function ComputerPairingPhone() {
   const [accessToken, setAccessToken] = useState('');
@@ -18,6 +19,9 @@ export default function ComputerPairingPhone() {
   const [taskType, setTaskType] = useState('list_files');
   const [taskPath, setTaskPath] = useState('');
   const [taskQuery, setTaskQuery] = useState('');
+  const [taskDestination, setTaskDestination] = useState('');
+  const [taskName, setTaskName] = useState('');
+  const [taskUrl, setTaskUrl] = useState('');
   const [taskBusy, setTaskBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -54,6 +58,7 @@ export default function ComputerPairingPhone() {
   }, []);
 
   useEffect(() => () => scannerControlsRef.current?.stop(), []);
+  useEffect(() => { setAuthorizedRoot((current) => current || readComputerRoot()); }, []);
 
   useEffect(() => {
     if (!accessToken) {
@@ -115,54 +120,57 @@ export default function ComputerPairingPhone() {
     } catch (cancelError) {
       setError(cancelError?.message || 'تعذر إلغاء المهمة.');
     }
+  }
 
-    async function createTask(event) {
-      event.preventDefault();
-      if (!accessToken || !activeDevice || taskBusy) return;
-      setTaskBusy(true);
-      setError('');
-      try {
-        const payload = {
-          authorizedRoot: authorizedRoot.trim(),
-          ...(taskType === 'list_files' ? { path: taskPath.trim() } : {}),
-          ...(taskType === 'file_metadata' ? { path: taskPath.trim() } : {}),
-          ...(taskType === 'search_files' ? { path: taskPath.trim(), query: taskQuery.trim() } : {}),
-        };
-        const response = await fetch('/api/computer/tasks', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            deviceId: activeDevice.id,
-            taskType,
-            payload,
-          }),
-          cache: 'no-store',
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.message || 'تعذر إنشاء طلب المهمة.');
-        const approvalResponse = await fetch(`/api/computer/tasks/${result.task.id}/approval`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ decision: 'approved' }),
-          cache: 'no-store',
-        });
-        const approvalResult = await approvalResponse.json();
-        if (!approvalResponse.ok) {
-          throw new Error(approvalResult.message || 'أُنشئ الطلب لكن تعذر اعتماده.');
-        }
-        setTasks((current) => [approvalResult.task, ...current.filter((task) => task.id !== approvalResult.task.id)]);
-        setStatus('اعتُمدت المهمة؛ سيبدأ الكمبيوتر تنفيذها إذا كان التطبيق يعمل.');
-      } catch (createError) {
-        setError(createError?.message || 'تعذر إنشاء المهمة.');
-      } finally {
-        setTaskBusy(false);
+  async function createTask(event) {
+    event.preventDefault();
+    if (!accessToken || !activeDevice || taskBusy) return;
+    setTaskBusy(true);
+    setError('');
+    try {
+      const payload = buildTaskPayload(taskType, {
+        authorizedRoot: authorizedRoot.trim(),
+        path: taskPath.trim(),
+        query: taskQuery.trim(),
+        destination: taskDestination.trim(),
+        name: taskName.trim(),
+        url: taskUrl.trim(),
+      });
+      rememberComputerRoot(authorizedRoot.trim());
+      const response = await fetch('/api/computer/tasks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          deviceId: activeDevice.id,
+          taskType,
+          payload,
+        }),
+        cache: 'no-store',
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'تعذر إنشاء طلب المهمة.');
+      const approvalResponse = await fetch(`/api/computer/tasks/${result.task.id}/approval`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ decision: 'approved' }),
+        cache: 'no-store',
+      });
+      const approvalResult = await approvalResponse.json();
+      if (!approvalResponse.ok) {
+        throw new Error(approvalResult.message || 'أُنشئ الطلب لكن تعذر اعتماده.');
       }
+      setTasks((current) => [approvalResult.task, ...current.filter((task) => task.id !== approvalResult.task.id)]);
+      setStatus('اعتُمدت المهمة؛ سيبدأ الكمبيوتر تنفيذها إذا كان التطبيق يعمل.');
+    } catch (createError) {
+      setError(createError?.message || 'تعذر إنشاء المهمة.');
+    } finally {
+      setTaskBusy(false);
     }
   }
 
@@ -272,6 +280,11 @@ export default function ComputerPairingPhone() {
           امسح الرمز الظاهر على الكمبيوتر. لن يتم الاقتران قبل موافقتك الصريحة.
           إذا كان هناك كمبيوتر نشط، سيطلب التطبيق تأكيد استبداله بشكل منفصل.
         </p>
+        <p className="mt-2 text-sm">
+          <a href="/computer/pair" className="text-gold hover:underline">
+            هل أنت على الكمبيوتر؟ اعرض رمز QR بدل فتح الكاميرا
+          </a>
+        </p>
 
         {!authReady ? <p className="mt-5 text-sm text-text-secondary">جارٍ التحقق من تسجيل الدخول…</p> : null}
         {authReady && !accessToken ? (
@@ -324,6 +337,7 @@ export default function ComputerPairingPhone() {
             {activeDevice ? (
               <form onSubmit={createTask} className="mt-4 space-y-3 rounded-lg border border-base-border p-3">
                 <p className="text-xs text-text-secondary">الجهاز النشط: {activeDevice.label}</p>
+                {taskNeedsRoot(taskType) ? (
                 <label className="block text-sm">
                   مجلد Windows الذي اخترته وسمحت به في التطبيق
                   <input
@@ -335,6 +349,7 @@ export default function ComputerPairingPhone() {
                     className="mt-1 min-h-10 w-full rounded border border-base-border bg-base-bg px-3 font-mono text-xs"
                   />
                 </label>
+                ) : null}
                 <label className="block text-sm">
                   العملية
                   <select
@@ -342,12 +357,37 @@ export default function ComputerPairingPhone() {
                     onChange={(event) => setTaskType(event.target.value)}
                     className="mt-1 min-h-10 w-full rounded border border-base-border bg-base-bg px-3"
                   >
-                    <option value="list_files">عرض الملفات والمجلدات</option>
-                    <option value="search_files">البحث عن أسماء الملفات</option>
-                    <option value="file_metadata">معلومات ملف</option>
+                    {Object.entries(COMPUTER_TASK_LABELS).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
                   </select>
                 </label>
-                {taskType !== 'search_files' ? (
+                {taskType === 'open_url' ? (
+                  <label className="block text-sm">
+                    الرابط
+                    <input value={taskUrl} onChange={(event) => setTaskUrl(event.target.value)} maxLength={2048} required dir="ltr"
+                      placeholder="https://" className="mt-1 min-h-10 w-full rounded border border-base-border bg-base-bg px-3 font-mono text-xs" />
+                  </label>
+                ) : taskType === 'open_app' || taskType === 'run_command' ? (
+                  <label className="block text-sm">
+                    {taskType === 'open_app' ? 'اسم البرنامج كما أضفته في تطبيق الكمبيوتر' : 'اسم الأمر كما أضفته في تطبيق الكمبيوتر'}
+                    <input value={taskName} onChange={(event) => setTaskName(event.target.value)} maxLength={64} required
+                      className="mt-1 min-h-10 w-full rounded border border-base-border bg-base-bg px-3" />
+                  </label>
+                ) : taskType === 'transfer_file' ? (
+                  <>
+                    <label className="block text-sm">
+                      الملف المصدر (مسار نسبي)
+                      <input value={taskPath} onChange={(event) => setTaskPath(event.target.value)} maxLength={512} required
+                        className="mt-1 min-h-10 w-full rounded border border-base-border bg-base-bg px-3 font-mono text-xs" />
+                    </label>
+                    <label className="block text-sm">
+                      مسار النسخة الجديدة (نسبي)
+                      <input value={taskDestination} onChange={(event) => setTaskDestination(event.target.value)} maxLength={512} required
+                        className="mt-1 min-h-10 w-full rounded border border-base-border bg-base-bg px-3 font-mono text-xs" />
+                    </label>
+                  </>
+                ) : taskType !== 'search_files' ? (
                   <label className="block text-sm">
                     المسار النسبي داخل المجلد (اختياري للقائمة)
                     <input
@@ -395,7 +435,7 @@ export default function ComputerPairingPhone() {
               {tasks.map((task) => (
                 <li key={task.id} className="rounded-lg border border-base-border p-3 text-sm">
                   <div className="flex items-center justify-between gap-3">
-                    <span>{task.task_type}</span>
+                    <span>{COMPUTER_TASK_LABELS[task.task_type] || task.task_type}</span>
                     <span className="text-text-secondary">{task.status}</span>
                   </div>
                   {task.result ? (
@@ -424,7 +464,7 @@ export default function ComputerPairingPhone() {
             <p className="text-sm text-text-secondary">الكمبيوتر الذي يطلب الربط:</p>
             <p className="text-lg font-semibold">{pairing.label}</p>
             <p className="text-xs leading-5 text-text-secondary">
-              بالموافقة، تسمح لهذا المفتاح العام بالارتباط بحسابك. لا يتم تنفيذ ملفات أو أوامر نظام في هذه المرحلة.
+              بالموافقة، تسمح لهذا المفتاح العام بالارتباط بحسابك. كل مهمة لاحقة تحتاج موافقتك، ولا يشغّل الكمبيوتر إلا البرامج والأوامر التي تضيفها فيه بنفسك.
             </p>
             {replacementLabel ? (
               <div role="alert" className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">

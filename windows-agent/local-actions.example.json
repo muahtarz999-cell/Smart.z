@@ -1,0 +1,11 @@
+{
+  "apps": [
+    { "name": "المتصفح", "path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" },
+    { "name": "الوورد", "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE" },
+    { "name": "المفكرة", "path": "C:\\Windows\\System32\\notepad.exe" }
+  ],
+  "commands": [
+    { "name": "نسخ احتياطي", "path": "C:\\Scripts\\backup.bat", "args": [] },
+    { "name": "عنوان الشبكة", "path": "C:\\Windows\\System32\\ipconfig.exe", "args": [] }
+  ]
+}

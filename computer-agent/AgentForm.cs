@@ -20,6 +20,10 @@ internal sealed class AgentForm : Form
     private readonly TextBox _origin = new() { Width = 370, PlaceholderText = "https://smartz.example" };
     private readonly TextBox _label = new() { Width = 220, Text = Environment.MachineName };
     private readonly ListBox _folders = new() { Width = 410, Height = 82 };
+    private readonly ListBox _apps = new() { Width = 410, Height = 82 };
+    private readonly ListBox _commands = new() { Width = 410, Height = 82 };
+    private readonly List<AgentApp> _appItems = [];
+    private readonly List<AgentCommand> _commandItems = [];
     private readonly PictureBox _qr = new() { Width = 260, Height = 260, SizeMode = PictureBoxSizeMode.Zoom };
     private readonly Label _status = new() { AutoSize = true, MaximumSize = new Size(620, 0) };
     private readonly Button _pairButton = new() { Text = "ربط الكمبيوتر عبر QR", AutoSize = true };
@@ -51,7 +55,7 @@ internal sealed class AgentForm : Form
 
         layout.Controls.Add(new Label
         {
-            Text = "يربط هذا التطبيق جهاز Windows بعد موافقة هاتف Smart.z. لا ينفذ أوامر نظام.",
+            Text = "يربط هذا التطبيق جهاز Windows بعد موافقة هاتف Smart.z. ينفذ فقط: عمليات الملفات داخل المجلدات المسموحة، فتح المستندات والروابط، والبرامج والأوامر التي تضيفها أنت هنا بالاسم. كل مهمة تحتاج موافقتك من الهاتف.",
             AutoSize = true,
             MaximumSize = new Size(620, 0),
         });
@@ -70,6 +74,28 @@ internal sealed class AgentForm : Form
         folderButtons.Controls.Add(addFolder);
         folderButtons.Controls.Add(removeFolder);
         layout.Controls.Add(folderButtons);
+
+        layout.Controls.Add(new Label { Text = "البرامج المسموح للهاتف بفتحها (بالاسم)", AutoSize = true });
+        layout.Controls.Add(_apps);
+        var appButtons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
+        var addApp = new Button { Text = "إضافة برنامج", AutoSize = true };
+        var removeApp = new Button { Text = "إزالة المحدد", AutoSize = true };
+        addApp.Click += (_, _) => AddApp();
+        removeApp.Click += (_, _) => RemoveSelected(_apps, _appItems);
+        appButtons.Controls.Add(addApp);
+        appButtons.Controls.Add(removeApp);
+        layout.Controls.Add(appButtons);
+
+        layout.Controls.Add(new Label { Text = "الأوامر المسموح للهاتف بتشغيلها (بالاسم، مع عرض ناتجها)", AutoSize = true });
+        layout.Controls.Add(_commands);
+        var commandButtons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
+        var addCommand = new Button { Text = "إضافة أمر", AutoSize = true };
+        var removeCommand = new Button { Text = "إزالة المحدد", AutoSize = true };
+        addCommand.Click += (_, _) => AddCommand();
+        removeCommand.Click += (_, _) => RemoveSelected(_commands, _commandItems);
+        commandButtons.Controls.Add(addCommand);
+        commandButtons.Controls.Add(removeCommand);
+        layout.Controls.Add(commandButtons);
 
         var agentButtons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
         _pairButton.Click += async (_, _) => await PairAsync();
@@ -100,6 +126,8 @@ internal sealed class AgentForm : Form
             _origin.Text = _configuration.Origin;
             _label.Text = _configuration.Label;
             foreach (var root in _configuration.AuthorizedRoots) _folders.Items.Add(root);
+            foreach (var app in _configuration.AppList) AddAppItem(app);
+            foreach (var command in _configuration.CommandList) AddCommandItem(command);
             _startButton.Enabled = true;
             SetStatus($"الجهاز مربوط ({_configuration.DeviceId}). اختر «تشغيل استقبال المهام» للبدء.");
         }
@@ -128,6 +156,100 @@ internal sealed class AgentForm : Form
         }
         _folders.Items.Add(root);
         SaveConfigurationIfPaired();
+    }
+
+    private void AddApp()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "اختر البرنامج الذي تسمح للهاتف بفتحه",
+            Filter = "البرامج (*.exe)|*.exe",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var name = PromptText("اسم البرنامج", "الاسم الذي ستقوله للمساعد (مثل: الوورد، المتصفح):",
+            Path.GetFileNameWithoutExtension(dialog.FileName));
+        if (name is null) return;
+        if (_appItems.Any(app => string.Equals(app.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            SetStatus("يوجد برنامج بهذا الاسم.");
+            return;
+        }
+        AddAppItem(new AgentApp(name, Path.GetFullPath(dialog.FileName)));
+        SaveConfigurationIfPaired();
+    }
+
+    private void AddCommand()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "اختر البرنامج أو السكربت الذي يشغّله هذا الأمر",
+            Filter = "البرامج والسكربتات (*.exe;*.bat;*.cmd)|*.exe;*.bat;*.cmd|كل الملفات (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var name = PromptText("اسم الأمر", "الاسم الذي ستقوله للمساعد (مثل: نسخ احتياطي):",
+            Path.GetFileNameWithoutExtension(dialog.FileName));
+        if (name is null) return;
+        if (_commandItems.Any(command => string.Equals(command.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            SetStatus("يوجد أمر بهذا الاسم.");
+            return;
+        }
+        var arguments = PromptText("وسائط الأمر", "وسائط ثابتة تُمرَّر للأمر (اتركها فارغة إن لم توجد):", string.Empty, allowEmpty: true);
+        if (arguments is null) return;
+        AddCommandItem(new AgentCommand(name, Path.GetFullPath(dialog.FileName), arguments));
+        SaveConfigurationIfPaired();
+    }
+
+    private void AddAppItem(AgentApp app)
+    {
+        _appItems.Add(app);
+        _apps.Items.Add($"{app.Name} — {app.Path}");
+    }
+
+    private void AddCommandItem(AgentCommand command)
+    {
+        _commandItems.Add(command);
+        _commands.Items.Add($"{command.Name} — {command.Path} {command.Arguments}".TrimEnd());
+    }
+
+    private void RemoveSelected<T>(ListBox list, List<T> items)
+    {
+        var index = list.SelectedIndex;
+        if (index < 0 || index >= items.Count) return;
+        items.RemoveAt(index);
+        list.Items.RemoveAt(index);
+        SaveConfigurationIfPaired();
+    }
+
+    private string? PromptText(string title, string prompt, string initial, bool allowEmpty = false)
+    {
+        using var form = new Form
+        {
+            Text = title,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ClientSize = new Size(420, 130),
+            RightToLeft = RightToLeft.Yes,
+            RightToLeftLayout = true,
+        };
+        var label = new Label { Text = prompt, AutoSize = true, Location = new Point(12, 12) };
+        var input = new TextBox { Text = initial, Width = 396, Location = new Point(12, 40), MaxLength = allowEmpty ? 400 : 64 };
+        var ok = new Button { Text = "حفظ", DialogResult = DialogResult.OK, Location = new Point(12, 84), AutoSize = true };
+        var cancel = new Button { Text = "إلغاء", DialogResult = DialogResult.Cancel, Location = new Point(110, 84), AutoSize = true };
+        form.Controls.AddRange([label, input, ok, cancel]);
+        form.AcceptButton = ok;
+        form.CancelButton = cancel;
+        while (form.ShowDialog(this) == DialogResult.OK)
+        {
+            var value = input.Text.Trim();
+            if (value.Any(char.IsControl)) continue;
+            if (allowEmpty || value.Length is >= 1 and <= 64) return value;
+        }
+        return null;
     }
 
     private void RemoveFolder()
@@ -251,7 +373,9 @@ internal sealed class AgentForm : Form
                 if (string.IsNullOrWhiteSpace(deviceId)) throw new InvalidDataException("لم يرجع الخادم معرّف الجهاز.");
 
                 var roots = _folders.Items.Cast<string>().Select(NormalizeRoot).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-                _configuration = new AgentConfiguration(origin, deviceId, cleanLabel, Base64Url(privateKeyBytes), roots);
+                _configuration = new AgentConfiguration(
+                    origin, deviceId, cleanLabel, Base64Url(privateKeyBytes), roots,
+                    [.. _appItems], [.. _commandItems]);
                 _configuration.Save();
                 _origin.Text = origin;
                 _startButton.Enabled = true;
@@ -368,7 +492,7 @@ internal sealed class AgentForm : Form
                 }
                 catch (OperationCanceledException) when (executionCancellation.IsCancellationRequested)
                 {
-                    if (workerCancellation.IsCancellationRequested)
+                    if (cancellationToken.IsCancellationRequested)
                     {
                         try
                         {
@@ -398,7 +522,7 @@ internal sealed class AgentForm : Form
                             new
                             {
                                 status = "failed",
-                                result = new { errorCode = ClassifyError(exception) },
+                                result = FailureResult(exception),
                             });
                         using var reportJson = await ReadResponseAsync(report);
                         EnsureResponse(report, reportJson.RootElement);
@@ -488,6 +612,16 @@ internal sealed class AgentForm : Form
     {
         var type = task.GetProperty("task_type").GetString();
         var payload = task.GetProperty("payload");
+        switch (type)
+        {
+            case "open_url":
+                return LimitResult(LocalActions.OpenUrl(RequiredString(payload, "url")));
+            case "open_app":
+                return LimitResult(LocalActions.OpenApp(_configuration!.AppList, RequiredString(payload, "appName")));
+            case "run_command":
+                return LimitResult(LocalActions.RunCommand(_configuration!.CommandList, RequiredString(payload, "commandName"), cancellationToken));
+        }
+
         var requestedRoot = payload.GetProperty("authorizedRoot").GetString();
         if (string.IsNullOrWhiteSpace(requestedRoot)) throw new UnauthorizedAccessException();
         var root = NormalizeRoot(requestedRoot);
@@ -504,6 +638,7 @@ internal sealed class AgentForm : Form
             "search_files" => SearchNames(root, OptionalString(payload, "path"), RequiredString(payload, "query"), OptionalInt(payload, "maxResults", 50), cancellationToken),
             "file_metadata" => GetMetadata(root, RequiredString(payload, "path"), cancellationToken),
             "transfer_file" => TransferFile(root, RequiredString(payload, "sourcePath"), RequiredString(payload, "destinationPath"), cancellationToken),
+            "open_file" => LimitResult(LocalActions.OpenDocument(ResolveSafePath(root, RequiredString(payload, "path")), RequiredString(payload, "path"))),
             _ => throw new InvalidDataException(),
         };
     }
@@ -674,7 +809,7 @@ internal sealed class AgentForm : Form
             bodyHash));
     }
 
-    private static byte[] ResolveSafePath(string root, string relativePath)
+    private static string ResolveSafePath(string root, string relativePath)
     {
         if (relativePath.Length > 512 ||
             Path.IsPathRooted(relativePath) ||
@@ -805,6 +940,8 @@ internal sealed class AgentForm : Form
 
     private static string ClassifyError(Exception exception) => exception switch
     {
+        LocalActionNotFoundException notFound => notFound.Kind == "app" ? "APP_NOT_IN_LOCAL_LIST" : "COMMAND_NOT_IN_LOCAL_LIST",
+        TimeoutException => "COMMAND_TIMED_OUT",
         UnauthorizedAccessException => "SCOPE_NOT_AUTHORIZED",
         FileNotFoundException => "FILE_NOT_FOUND",
         DirectoryNotFoundException => "DIRECTORY_NOT_FOUND",
@@ -814,12 +951,19 @@ internal sealed class AgentForm : Form
         _ => "LOCAL_FILE_OPERATION_FAILED",
     };
 
+    /// <summary>Error code only; for an unknown app/command also the local names, so the phone can suggest one.</summary>
+    private static object FailureResult(Exception exception) => exception is LocalActionNotFoundException notFound
+        ? new { errorCode = ClassifyError(exception), available = notFound.Available }
+        : new { errorCode = ClassifyError(exception) };
+
     private void SaveConfigurationIfPaired()
     {
         if (_configuration is null) return;
         _configuration = _configuration with
         {
             AuthorizedRoots = _folders.Items.Cast<string>().Select(NormalizeRoot).ToArray(),
+            Apps = [.. _appItems],
+            Commands = [.. _commandItems],
         };
         _configuration.Save();
     }

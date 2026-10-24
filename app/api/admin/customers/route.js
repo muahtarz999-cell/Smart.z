@@ -7,10 +7,14 @@ import {
   validateAdminRequest,
 } from '../../../../lib/admin';
 import {
+  callNode,
+  clusterCapacity,
   createServiceClient,
   getConfiguredClusterNodes,
   releaseNodeForUser,
 } from '../../../../lib/whatsapp-cluster';
+import { replacePhoneNumbers } from '../../../../lib/receptionist-store';
+import { brainStatus } from '../../../../lib/brain-providers';
 
 
 // Effectively permanent: Supabase Auth refuses sign-in and token refresh while banned.
@@ -36,23 +40,75 @@ function failed(step, error, status = 502) {
   return json({ error: true, code: 'FAILED', message: ADMIN_MESSAGES.FAILED }, status);
 }
 
+/**
+ * «حالة النظام» (?view=health): every WhatsApp node (awake, slots used, sessions
+ * connected, memory) and which services are configured. Names only, no secrets.
+ */
+async function systemHealth(service) {
+  const [assignments, database] = await Promise.all([
+    service.from('whatsapp_tenant_nodes').select('*'),
+    service.from('customer_registry').select('user_id', { count: 'exact', head: true }),
+  ]);
+  const rows = assignments.error ? [] : assignments.data;
+  const nodes = await Promise.all(getConfiguredClusterNodes().map(async (node) => {
+    const used = rows.filter((row) => row.node_id === node.id).length;
+    try {
+      const result = await callNode(node, '/api/sessions', { timeoutMs: 8_000 });
+      const sessions = Array.isArray(result.data?.sessions) ? result.data.sessions : [];
+      return {
+        id: node.id,
+        slots: node.slots,
+        used,
+        awake: result.ok,
+        nodeSlots: Number(result.data?.maxSlots) || null, // what the node itself allows (CLUSTER_NODE_SLOTS)
+        connected: sessions.filter((session) => session.connected).length,
+        memoryMb: Number(result.data?.memoryMb) || null,
+        // A node from before slots has no /api/sessions: it still works for slot 0.
+        upToDate: result.ok && Array.isArray(result.data?.sessions),
+      };
+    } catch {
+      return { id: node.id, slots: node.slots, used, awake: false, nodeSlots: null, connected: 0, memoryMb: null, upToDate: false };
+    }
+  }));
+  const configured = (...names) => names.every((name) => Boolean(process.env[name]));
+  return {
+    database: !database.error,
+    customers: database.count ?? null,
+    capacity: { used: rows.length, total: clusterCapacity() },
+    nodes,
+    brain: brainStatus(), // providers of the assistant's brain, in order, with their models
+    services: {
+      ai: brainStatus().some((provider) => provider.configured),
+      aiBackup: configured('OPENROUTER_API_KEY'),
+      cloudVoice: configured('AZURE_SPEECH_KEY') || configured('GOOGLE_TTS_API_KEY'),
+      receptionist: configured('OPENAI_API_KEY', 'OPENAI_WEBHOOK_SECRET'),
+      whatsappCalls: configured('WHATSAPP_CALLS_SIP_HOST'),
+      metaBusiness: configured('META_APP_ID', 'META_APP_SECRET'),
+    },
+    checkedAt: new Date().toISOString(),
+  };
+}
+
 export async function GET(request) {
   const gate = await requireAdmin(request);
   if (gate.response) return gate.response;
   const { service, admin } = gate;
+  if (new URL(request.url).searchParams.get('view') === 'health') return json(await systemHealth(service));
 
-  const [usersResult, registryResult, nodesResult] = await Promise.all([
+  const [usersResult, registryResult, nodesResult, numbersResult] = await Promise.all([
     service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
     service.from('customer_registry').select('*'),
-    service.from('whatsapp_tenant_nodes').select('user_id, node_id, status'),
+    service.from('whatsapp_tenant_nodes').select('*'), // '*': the slot column exists only after 202610220004
+    // Optional: absent until the receptionist migration is applied.
+    service.from('ai_receptionist_numbers').select('number, user_id, channel'),
   ]);
   if (usersResult.error) return failed('list_users', usersResult.error);
   if (registryResult.error) return failed('list_registry', registryResult.error);
   if (nodesResult.error) return failed('list_nodes', nodesResult.error);
 
   return json({
-    customers: mergeCustomerRows(usersResult.data.users, registryResult.data, nodesResult.data, admin.id),
-    whatsappCapacity: { used: nodesResult.data.length, total: getConfiguredClusterNodes().length },
+    customers: mergeCustomerRows(usersResult.data.users, registryResult.data, nodesResult.data, admin.id, numbersResult.error ? [] : numbersResult.data),
+    whatsappCapacity: { used: nodesResult.data.length, total: clusterCapacity(), nodes: getConfiguredClusterNodes().length },
   });
 }
 
@@ -129,6 +185,14 @@ export async function POST(request) {
       const { error } = await service.auth.admin.updateUserById(userId, { password: checked.password });
       if (error) return failed('set_password', error);
       return json({ success: true });
+    }
+
+    if (action === 'set_receptionist_numbers') {
+      const result = await replacePhoneNumbers(service, userId, checked.numbers);
+      if (!result.ok) {
+        return json({ error: true, code: 'NUMBER_TAKEN', message: `الرقم ${result.conflict} مسجّل لعميل آخر.` }, 409);
+      }
+      return json({ success: true, numbers: checked.numbers });
     }
 
     if (action === 'disconnect_whatsapp') {

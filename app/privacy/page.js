@@ -27,9 +27,11 @@ export default function PrivacyPage() {
               'ملفك الشخصي وما يتعلّمه المساعد عنك وذكرياتك.',
               'ملفاتك ومستنداتك ومواد المذاكرة.',
               'تقرير رسائل واتساب بعد استلامه على الهاتف.',
+              'ملاحظات قصيرة عن المواعيد والالتزامات المذكورة في محادثات واتساب الأخيرة، يستخدمها المساعد إن سألته عنها، وتُمسح تلقائيًا خلال أيام.',
               'إعداداتك، ومنها مشاركة الموقع إن فعّلتها.',
             ]} />
             <p>يُمسح هذا المحتوى عند تسجيل حساب آخر على الجهاز أو مسح بيانات التطبيق.</p>
+            <p>عند طلب «ملخص اليوم» فقط، يقرأ التطبيق على أندرويد رسائلك النصية وسجل مكالماتك لذلك اليوم بعد إذنك، ويرسلها مع رسائل واتساب إلى مزود الذكاء الاصطناعي لإعداد الملخص، دون حفظها على خوادمنا. وتُخفى رموز التحقق قبل الإرسال.</p>
           </Section>
           <Section title="2. ما نحفظه على خوادمنا">
             <List items={[
@@ -93,9 +95,11 @@ export default function PrivacyPage() {
               'Your profile, what the assistant learns about you, and your memories.',
               'Your files, documents and study materials.',
               'Your WhatsApp message report once it reaches your phone.',
+              'Short notes about appointments and commitments mentioned in recent WhatsApp chats, used only when you ask the assistant about them and deleted automatically within days.',
               'Your settings, including location sharing if you turn it on.',
             ]} />
             <p>This content is erased when another account signs in on the device or the app data is cleared.</p>
+            <p>Only when you ask for a «day summary», the Android app reads that day's SMS and call log (with your permission) and sends them with your WhatsApp messages to the AI provider to write the summary. They are not stored on our servers, and verification codes are masked first.</p>
           </Section>
           <Section title="2. What we store on our servers">
             <List items={[

@@ -47,6 +47,13 @@ import {
 import { configureSpeech, getVoiceSettings, primeSpeech, speak as speakReply } from '../lib/speech';
 import VoiceSettings from '../components/VoiceSettings';
 import SendActionBanner from '../components/SendActionBanner';
+import ComputerTaskBanner from '../components/ComputerTaskBanner';
+import CallSettings from '../components/CallSettings';
+import { markDriving } from '../lib/call-assistant';
+import { currentCoords, deviceTimeZone, preciseLocationEnabled, setPreciseLocation } from '../lib/location';
+import { dispatchAssistantAction, getAssistantCapabilities } from '../lib/assistant-actions';
+import { configureComputerTasks } from '../lib/computer-task-flow';
+import { isPhoneAgentRunning, stopPhoneAgent, updatePhoneAgentToken } from '../lib/phone-agent';
 import SendSettings from '../components/SendSettings';
 import { cancelPendingSend, configureSendActions, getActionSettings, isCancelCommand, queueSend } from '../lib/send-actions';
 import DrivingSettings from '../components/DrivingSettings';
@@ -56,8 +63,13 @@ import { DRIVING_MESSAGES, isDrivingStartCommand, isDrivingStopCommand } from '.
 import { addMessage, getRecentMessages } from '../lib/conversation';
 import { prepareCustomerLocalData } from '../lib/customer-local-data';
 import { inboxContextFor, listInboxMessages, runHousekeeping, syncInbox } from '../lib/whatsapp-inbox-store';
+import { commitmentsForQuestion } from '../lib/commitments-store';
+import { isCommitmentQuestion } from '../lib/commitments';
+import { isDaySummaryRequest } from '../lib/day-summary';
+import { summarizeDay } from '../lib/day-summary-client';
 import { buildInboxContext } from '../lib/whatsapp-inbox';
 import InboxSettings from '../components/InboxSettings';
+import ComputerPairingChooser from '../components/ComputerPairingChooser';
 import {
   getTaskReminderStatus,
   synchronizeTaskReminders,
@@ -77,6 +89,7 @@ const MENU_SECTIONS = [
   { id: 'study', label: 'المذاكرة' },
   { id: 'audio', label: 'الصوت' },
   { id: 'driving', label: 'وضع القيادة' },
+  { id: 'calls', label: 'المكالمات' },
   { id: 'apps', label: 'ربط التطبيقات' },
   { id: 'computer-pairing', label: 'ربط الكمبيوتر' },
   { id: 'privacy', label: 'الخصوصية والبيانات' },
@@ -622,7 +635,23 @@ export default function Home() {
     }
   }
 
-  /** Utterances handled on the device without the assistant: quiz answers, "تراجع", "اكتب لي عقد". */
+  async function runDaySummary(text) {
+    setReply('أجهّز ملخص يومك…');
+    try {
+      const summary = await summarizeDay(text, {
+        getAccessToken,
+        responseStyle: profileRef.current.responseStyle,
+        language: profileRef.current.language,
+      });
+      say(summary);
+      addMessage('user', text).catch(() => {});
+      addMessage('assistant', summary).catch(() => {});
+    } catch (error) {
+      say(error?.message || 'تعذّر إعداد الملخص الآن.');
+    }
+  }
+
+  /** Utterances handled on the device without the assistant: quiz answers, "تراجع", "اكتب لي عقد", «لخّص يومي». */
   function interceptLocally(text) {
     const drivingMode = drivingRef.current;
     if (drivingMode?.active && isDrivingStopCommand(text)) {
@@ -641,6 +670,15 @@ export default function Home() {
     }
     if (isCancelCommand(text) && cancelPendingSend()) {
       setReply('ألغيت الإرسال.');
+      return true;
+    }
+    if (isPhoneAgentRunning() && /^[أا]?(وقف|توقف)\s*(التحكم|المهم[ةه])?[.!]?$/.test(text.trim())) {
+      void stopPhoneAgent();
+      say('أوقفت التحكم في التطبيقات.');
+      return true;
+    }
+    if (isDaySummaryRequest(text)) {
+      void runDaySummary(text);
       return true;
     }
     const documentCommand = parseDocumentCommand(text);
@@ -682,6 +720,23 @@ export default function Home() {
         if (!result.ok) setAudioPlaybackError(result.error?.message || result.data?.error || 'تعذر إرسال رسالة واتساب.');
       },
     });
+    configureComputerTasks({
+      getAccessToken,
+      // The computer answers after the conversation turn ended: show it and keep it in the history.
+      onResult: ({ summary }) => {
+        if (!summary) return;
+        setReply(summary);
+        addMessage('assistant', summary).catch(() => {});
+      },
+    });
+    const runAssistantAction = (action) => dispatchAssistantAction(action, {
+      getAccessToken,
+      onMessage: (text) => setAudioPlaybackError(text),
+      onAgentProgress: (event) => {
+        if (event?.say) setReply(event.say);
+        if (event?.status && event.status !== 'running' && event.say) addMessage('assistant', event.say).catch(() => {});
+      },
+    });
     const audioFlow = new AudioFlowManager({
       getAccessToken,
       getPreferences: () => ({
@@ -689,11 +744,16 @@ export default function Home() {
         language: profileRef.current.language,
         confirmEverySend: getActionSettings().confirmEverySend,
       }),
-      getContext: getAssistantContext,
-      onAction: queueSend,
+      getContext: async () => ({
+        ...((await Promise.resolve(getAssistantContext()).catch(() => ({}))) || {}),
+        capabilities: await getAssistantCapabilities(),
+      }),
+      onAction: (action) => { void runAssistantAction(action); },
       interceptTranscript: (text) => interceptLocally(text),
       prepareAttachment,
       getInboxContext: (message) => inboxContextFor(message, getAccessToken),
+      // Hidden promises memory: read only when the user asks about promises.
+      getCommitments: (message) => (isCommitmentQuestion(message) ? commitmentsForQuestion(getAccessToken) : undefined),
       onTurnComplete: () => {
         // Runs in the background; learning must never slow down or break a conversation.
         learnFromRecentConversation({ getAccessToken })
@@ -733,6 +793,9 @@ export default function Home() {
         return {
           baseUrl: window.location.origin,
           ...session,
+          // "Now" and "here" for driving turns (lib/drive-turn.js); coords only when precise location is on.
+          timeZone: deviceTimeZone(),
+          coords: await currentCoords(),
           history: history.map(({ role, content }) => ({ role, content })),
           profile: context.profile || null,
           memories: Array.isArray(context.memories) ? context.memories : [],
@@ -782,6 +845,15 @@ export default function Home() {
     };
   }, [customerAccess.status, authUser?.id]);
 
+  // Driving mode marks itself on the server so WhatsApp calls get the driving message (lib/call-rules.js).
+  const drivingMarkedRef = useRef(false);
+  useEffect(() => {
+    if (customerAccess.status !== 'active' || drivingMarkedRef.current === driving.active) return;
+    if (!driving.active && !drivingMarkedRef.current) return; // nothing to clear on the first render
+    drivingMarkedRef.current = driving.active;
+    void markDriving(driving.active, getAccessToken);
+  }, [driving.active, customerAccess.status]);
+
   // The Android driving service needs each refreshed token (sessions refresh hourly).
   useEffect(() => {
     if (!authSession?.access_token) return;
@@ -789,6 +861,7 @@ export default function Home() {
       accessToken: authSession.access_token,
       expiresAt: authSession.expires_at ? authSession.expires_at * 1000 : 0,
     });
+    void updatePhoneAgentToken(authSession.access_token);
   }, [authSession?.access_token]);
 
   // Leaving the app (another app, locked screen): close the microphone and stay silent
@@ -1249,6 +1322,7 @@ export default function Home() {
               </div>
 
               <SendActionBanner />
+              <ComputerTaskBanner />
 
               {attachment && (
                 <div className="mx-4 mb-2 flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/5 px-3 py-2 text-xs">
@@ -1494,6 +1568,8 @@ export default function Home() {
                         className="h-11 w-full rounded-lg border border-base-border bg-base-card px-3 text-right text-sm text-text-primary placeholder:text-text-secondary focus:border-gold"
                       />
                     </label>
+
+                    <PreciseLocationSetting />
 
                     <fieldset className="space-y-3">
                       <legend className="text-sm text-text-primary">أسلوب الرد</legend>
@@ -1955,18 +2031,10 @@ export default function Home() {
                     }}
                     onStop={() => { void drivingRef.current?.stop('user'); }}
                   />
+                ) : activeSection === 'calls' ? (
+                  <CallSettings onOpenWhatsApp={() => setActiveSection('apps')} getAccessToken={getAccessToken} />
                 ) : activeSection === 'computer-pairing' ? (
-                  <div className="space-y-4">
-                    <p className="text-sm leading-7 text-text-secondary">
-                      امسح رمز الاقتران الظاهر على الكمبيوتر وراجع اسمه قبل الموافقة. يلزم تسجيل الدخول وصلاحية ربط الكمبيوتر.
-                    </p>
-                    <a
-                      href="/computer/approve"
-                      className="inline-flex min-h-12 items-center rounded-lg bg-gold px-5 text-sm font-semibold text-base-bg"
-                    >
-                      فتح ماسح رمز الكمبيوتر
-                    </a>
-                  </div>
+                  <ComputerPairingChooser />
                 ) : activeSection === 'privacy' ? (
                   <div className="space-y-7">
                     <div>
@@ -1983,6 +2051,8 @@ export default function Home() {
                             : 'التخزين محلي؛ هذا المتصفح لا يوفّر حماية إضافية من إزالة البيانات عند انخفاض مساحة الجهاز.'}
                       </p>
                       <p className="mt-2">تُرسل الرسائل النصية والتسجيلات الصوتية إلى Groq للمعالجة وتوليد الرد. إذا تعذّر Groq، قد يُرسل نص الطلب إلى OpenRouter كبديل لتوليد الردود النصية؛ لا تُرسل الملاحظات أو المهام أو الذكريات المحلية. يُنطق رد المساعد بصوت عربي محلي من الجهاز، ولا يُرسل النص إلى خدمة صوت خارجية.</p>
+                      <p className="mt-2">عند طلب «التحكم في التطبيقات» على أندرويد، تُرسل النصوص الظاهرة على شاشة التطبيق المستهدف إلى Groq (أو OpenRouter كبديل) في كل خطوة لاختيار الخطوة التالية، طوال تنفيذ المهمة فقط. لا يُرسل محتوى حقول كلمات المرور، ويمكنك الإيقاف من الإشعار في أي وقت.</p>
+                      <p className="mt-2">لمعرفة الوقت والمكان: يُرسل مع كل سؤال تاريخ اليوم ومنطقتك الزمنية واسم مدينتك فقط، تقديرًا من اتصالك بالإنترنت، أو بدقة إذا فعّلت «موقعي الدقيق» في «ملفي». عند الدقة تُرسل إحداثيات تقريبية (بدقة نحو كيلومتر) إلى خادم التطبيق ليحوّلها إلى اسم مدينة عبر OpenStreetMap، ولا تصل الإحداثيات إلى مزود الذكاء الاصطناعي. وعند البحث في الويب تُرسل عبارة البحث إلى Groq أو OpenRouter.</p>
                       <p className="mt-2">عند تأكيد فتح مسودة WhatsApp أو X، يُشارك الرقم ونص المسودة مع الخدمة الخارجية لفتحها؛ لا يتم الإرسال أو النشر إلا بضغطك داخل التطبيق نفسه.</p>
                     </div>
 
@@ -2082,5 +2152,42 @@ export default function Home() {
         </div>
       )}
     </main>
+  );
+}
+
+/** «ملفي»: lets the assistant know the user's city precisely (GPS → city name only). */
+function PreciseLocationSetting() {
+  const [enabled, setEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  useEffect(() => { setEnabled(preciseLocationEnabled()); }, []);
+
+  async function toggle() {
+    setBusy(true);
+    setNote('');
+    try {
+      setEnabled(await setPreciseLocation(!enabled));
+    } catch {
+      setEnabled(false);
+      setNote('لم يُسمح بالموقع. فعّله من إعدادات الجهاز ثم أعد المحاولة.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <label className="flex items-center justify-between gap-3 rounded-lg border border-base-border p-3">
+        <span className="text-xs leading-5 text-text-secondary">
+          <span className="block text-sm text-text-primary">موقعي الدقيق</span>
+          ليعرف المساعد مدينتك بدقة (الطقس، مواقيت الصلاة، الأماكن القريبة). يُرسل اسم المدينة فقط. بدونه يقدّرها من اتصالك بالإنترنت.
+        </span>
+        <button type="button" role="switch" aria-checked={enabled} disabled={busy} onClick={() => void toggle()}
+          className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors disabled:opacity-50 ${enabled ? 'bg-gold' : 'bg-base-border'}`}>
+          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${enabled ? 'right-0.5' : 'right-[22px]'}`} />
+        </button>
+      </label>
+      {note && <p role="alert" className="text-xs text-amber-300">{note}</p>}
+    </div>
   );
 }

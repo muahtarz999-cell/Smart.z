@@ -8,8 +8,15 @@ internal sealed record AgentConfiguration(
     string DeviceId,
     string Label,
     string PrivateKey,
-    string[] AuthorizedRoots)
+    string[] AuthorizedRoots,
+    AgentApp[]? Apps = null,
+    AgentCommand[]? Commands = null)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public AgentApp[] AppList => Apps ?? [];
+    [System.Text.Json.Serialization.JsonIgnore]
+    public AgentCommand[] CommandList => Commands ?? [];
+
     private static readonly string ConfigurationPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Smartz",

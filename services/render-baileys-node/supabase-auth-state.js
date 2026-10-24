@@ -11,6 +11,9 @@
  * record per signal key (`<type>-<id>`), serialised with BufferJSON.
  */
 import { BufferJSON, initAuthCreds, proto } from '@whiskeysockets/baileys';
+import { slotPrefix } from './slots.js';
+
+export { slotPrefix };
 
 const TABLE = 'whatsapp_node_sessions';
 const READ_CHUNK = 200;
@@ -24,8 +27,10 @@ function deserialise(value) {
   return JSON.parse(JSON.stringify(value), BufferJSON.reviver);
 }
 
-export async function useSupabaseAuthState(supabase, nodeId) {
-  async function readMany(keys) {
+export async function useSupabaseAuthState(supabase, nodeId, slot = 0) {
+  const prefix = slotPrefix(slot);
+  async function readMany(rawKeys) {
+    const keys = rawKeys.map((key) => prefix + key);
     const found = new Map();
     for (let index = 0; index < keys.length; index += READ_CHUNK) {
       const slice = keys.slice(index, index + READ_CHUNK);
@@ -35,7 +40,7 @@ export async function useSupabaseAuthState(supabase, nodeId) {
         .eq('node_id', nodeId)
         .in('key', slice);
       if (error) throw new Error(`SESSION_READ_FAILED: ${error.message}`);
-      for (const row of data || []) found.set(row.key, deserialise(row.value));
+      for (const row of data || []) found.set(row.key.slice(prefix.length), deserialise(row.value));
     }
     return found;
   }
@@ -44,7 +49,7 @@ export async function useSupabaseAuthState(supabase, nodeId) {
     if (!entries.length) return;
     const now = new Date().toISOString();
     const { error } = await supabase.from(TABLE).upsert(
-      entries.map(([key, value]) => ({ node_id: nodeId, key, value: serialise(value), updated_at: now })),
+      entries.map(([key, value]) => ({ node_id: nodeId, key: prefix + key, value: serialise(value), updated_at: now })),
       { onConflict: 'node_id,key' }
     );
     if (error) throw new Error(`SESSION_WRITE_FAILED: ${error.message}`);
@@ -52,7 +57,7 @@ export async function useSupabaseAuthState(supabase, nodeId) {
 
   async function removeMany(keys) {
     if (!keys.length) return;
-    const { error } = await supabase.from(TABLE).delete().eq('node_id', nodeId).in('key', keys);
+    const { error } = await supabase.from(TABLE).delete().eq('node_id', nodeId).in('key', keys.map((key) => prefix + key));
     if (error) throw new Error(`SESSION_DELETE_FAILED: ${error.message}`);
   }
 
@@ -95,7 +100,11 @@ export async function useSupabaseAuthState(supabase, nodeId) {
   };
 }
 
-export async function clearSupabaseAuthState(supabase, nodeId) {
-  const { error } = await supabase.from(TABLE).delete().eq('node_id', nodeId);
+/** Wipes one slot only: other customers on the same node keep their sessions. */
+export async function clearSupabaseAuthState(supabase, nodeId, slot = 0) {
+  const prefix = slotPrefix(slot);
+  const query = supabase.from(TABLE).delete().eq('node_id', nodeId);
+  // Slot 0 owns every key without a slot prefix.
+  const { error } = prefix ? await query.like('key', `${prefix}%`) : await query.not('key', 'like', 'slot%/%');
   if (error) throw new Error(`SESSION_CLEAR_FAILED: ${error.message}`);
 }

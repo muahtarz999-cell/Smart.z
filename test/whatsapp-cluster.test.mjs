@@ -28,7 +28,8 @@ function fakeClient({ assignment = null, claim, release = null } = {}) {
     async rpc(name, args) {
       calls.push({ name, args });
       if (name === 'claim_whatsapp_cluster_node') return { data: claim, error: null };
-      if (name === 'release_whatsapp_cluster_node') return { data: release, error: null };
+      // Since slots (2026-10-22) the release says which (node, slot) was freed.
+      if (name === 'release_whatsapp_cluster_slot') return { data: { node_id: release, slot: release ? 0 : null }, error: null };
       return { data: null, error: null };
     },
   };
@@ -44,7 +45,7 @@ function fakeFetch({ awake = [], resetOk = true } = {}) {
       if (!awake.includes(id)) throw new Error('sleeping');
       return { ok: true, status: 200, json: async () => ({ ok: true }) };
     }
-    if (href.endsWith('/api/reset')) return { ok: resetOk, status: resetOk ? 200 : 500, json: async () => ({}) };
+    if (new URL(href).pathname === '/api/reset') return { ok: resetOk, status: resetOk ? 200 : 500, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => ({}) };
   };
   return requests;
@@ -66,7 +67,7 @@ test('a new claim offers awake nodes first and wipes the node before handing it 
   assert.equal(node.id, 3);
   assert.equal(isNew, true);
   assert.deepEqual(client.calls[0].args.p_candidates.map((c) => c.id), [3, 1, 2]);
-  const reset = requests.find((r) => r.href.endsWith('/api/reset'));
+  const reset = requests.find((r) => new URL(r.href).pathname === '/api/reset');
   assert.ok(reset, 'node must be reset');
   assert.equal(reset.init.headers.Authorization, 'Bearer key-3-xxxxxxxxxxxxxxxxxxxxxxxx');
 });
@@ -87,7 +88,7 @@ test('if the reset fails the reservation is released, never handed over', async 
   fakeFetch({ awake: [1], resetOk: false });
   const client = fakeClient({ claim: { success: true, node_id: 1, is_new: true } });
   await assert.rejects(cluster.allocateNode(client, 'user-1'), (error) => error.code === 'NODE_RESET_FAILED');
-  assert.ok(client.calls.some((c) => c.name === 'release_whatsapp_cluster_node'));
+  assert.ok(client.calls.some((c) => c.name === 'release_whatsapp_cluster_slot'));
 });
 
 test('a full cluster is reported as such; there is no fallback node', async () => {
@@ -102,5 +103,66 @@ test('release wipes the session on the node that was freed', async () => {
   const requests = fakeFetch();
   const client = fakeClient({ release: 2 });
   assert.deepEqual(await cluster.releaseNode(client), { released: true, nodeId: 2 });
-  assert.ok(requests.some((r) => r.href === 'https://node2.example/api/reset'));
+  assert.ok(requests.some((r) => r.href === 'https://node2.example/api/reset?slot=0'));
+});
+
+// ---------------------------------------------------------------- several customers per node (2026-10-22)
+
+test('slots: one customer per node by default; RENDER_SERVER_<N>_SLOTS raises it (max 20)', () => {
+  const env = {
+    RENDER_SERVER_1_URL: 'https://node1.example', RENDER_SERVER_1_KEY: 'k1',
+    RENDER_SERVER_2_URL: 'https://node2.example', RENDER_SERVER_2_KEY: 'k2', RENDER_SERVER_2_SLOTS: '8',
+    RENDER_SERVER_3_URL: 'https://node3.example', RENDER_SERVER_3_KEY: 'k3', RENDER_SERVER_3_SLOTS: '99',
+  };
+  assert.deepEqual(cluster.getConfiguredClusterNodes(env).map((node) => node.slots), [1, 8, 20]);
+  assert.equal(cluster.clusterCapacity(env), 29);
+  assert.equal(cluster.slotsFor(4, { RENDER_SERVER_4_SLOTS: 'abc' }), 1);
+});
+
+test('slots: the claim offers each node with its slot count; the slot reaches every node call', async () => {
+  configureNodes(2);
+  process.env.RENDER_SERVER_2_SLOTS = '6';
+  const requests = fakeFetch({ awake: [1, 2] });
+  const client = fakeClient({ claim: { success: true, node_id: 2, slot: 4, is_new: true } });
+  const { node } = await cluster.allocateNode(client, 'user-1');
+  delete process.env.RENDER_SERVER_2_SLOTS;
+  const claim = client.calls.find((c) => c.name === 'claim_whatsapp_cluster_node');
+  assert.deepEqual(claim.args.p_candidates.map((c) => c.slots), [1, 6]);
+  assert.equal(node.id, 2);
+  assert.equal(node.slot, 4);
+  assert.ok(requests.some((r) => r.href === 'https://node2.example/api/reset?slot=4'), 'only slot 4 is wiped');
+});
+
+test('slots: assignments without a slot column (before the migration) are slot 0', () => {
+  configureNodes(1);
+  assert.equal(cluster.nodeForAssignment({ node_id: 1 }).slot, 0);
+  assert.equal(cluster.nodeForAssignment({ node_id: 1, slot: 3 }).slot, 3);
+  assert.equal(cluster.nodeForAssignment(null), null);
+  assert.equal(cluster.slotFromBody({}), 0);
+  assert.equal(cluster.slotFromBody({ slot: 5 }), 5);
+  assert.equal(cluster.slotFromBody({ slot: 'x' }), -1);
+  assert.equal(cluster.slotFromBody({ slot: 50 }), -1);
+});
+
+test('slots: node service keeps one session per slot and slot 0 on the old keys', async () => {
+  const { slotPrefix } = await import('../services/render-baileys-node/slots.js');
+  assert.equal(slotPrefix(0), '');
+  assert.equal(slotPrefix(undefined), '');
+  assert.equal(slotPrefix(3), 'slot3/');
+  const node = await readFile(new URL('../services/render-baileys-node/index.js', import.meta.url), 'utf8');
+  assert.match(node, /function createSession\(slot\)/);
+  assert.match(node, /app\.post\('\/api\/send', withSession\(/);
+  assert.match(node, /app\.post\('\/api\/reset', withSession\(/);
+  assert.match(node, /nodeId: NODE_ID,\s+slot,\s+remoteJid/);
+  assert.match(node, /JSON\.stringify\(\{ nodeId: NODE_ID, slot \}\)/);
+  const auth = await readFile(new URL('../services/render-baileys-node/supabase-auth-state.js', import.meta.url), 'utf8');
+  assert.match(auth, /query\.not\('key', 'like', 'slot%\/%'\)/, 'clearing slot 0 must keep the other slots');
+  const migration = await readFile(new URL('../supabase/migrations/202610220004_whatsapp_multi_slot.sql', import.meta.url), 'utf8');
+  assert.match(migration, /drop index if exists public\.whatsapp_tenant_nodes_node_id_key/);
+  assert.match(migration, /on public\.whatsapp_tenant_nodes \(node_id, slot\)/);
+  assert.match(migration, /create or replace function public\.release_whatsapp_cluster_slot\(\)/);
+  for (const route of ['message', 'call']) {
+    const source = await readFile(new URL(`../app/api/whatsapp/cluster/${route}/route.js`, import.meta.url), 'utf8');
+    assert.match(source, /\.eq\('slot', slotFromBody\(body\)\)/, route);
+  }
 });

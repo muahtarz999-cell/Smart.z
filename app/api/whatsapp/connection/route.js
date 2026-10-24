@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../lib/customer-access';
+import { setWhatsAppReceptionist } from '../../../../lib/receptionist-store';
+import { createServiceClient } from '../../../../lib/whatsapp-cluster';
+import { businessConnection, setMetaCalling } from '../../../../lib/whatsapp-calling';
 
 
 export async function GET(request) {
@@ -52,6 +55,18 @@ export async function GET(request) {
 export async function DELETE(request) {
   const access = await requireCustomerRegistered(request);
   if (!access.ok) return customerAccessResponse(access);
+
+  // AI answering of WhatsApp calls ends with the business link (lib/whatsapp-calling.js).
+  const service = createServiceClient();
+  if (service) {
+    try {
+      const connection = await businessConnection(service, access.user.id);
+      if (connection) await setMetaCalling(connection, false).catch(() => null);
+      await setWhatsAppReceptionist(service, access.user.id, false, null);
+    } catch {
+      // The receptionist tables may not exist yet; the disconnect still goes ahead.
+    }
+  }
 
   const { error } = await access.client
     .from('whatsapp_connections')

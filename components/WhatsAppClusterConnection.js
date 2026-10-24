@@ -49,6 +49,7 @@ export default function WhatsAppClusterConnection({
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [allowlistDraft, setAllowlistDraft] = useState(null);
+  const [callMessageDraft, setCallMessageDraft] = useState(null);
   const runRef = useRef(0); // increments to cancel any running wait loop
 
   const api = useCallback(async (url, init = {}) => {
@@ -291,6 +292,30 @@ export default function WhatsAppClusterConnection({
                     </select>
                   </label>
                 </div>
+              )}
+              <label className="flex items-center justify-between gap-3 rounded-lg border border-base-border p-3">
+                <span className="text-xs leading-5 text-text-secondary">
+                  <span className="block text-sm text-text-primary">رفض مكالمات واتساب مع رسالة</span>
+                  يرفض المكالمات الصوتية والمرئية الواردة ويرسل للمتصل رسالة. يعمل تلقائيًا أثناء وضع القيادة حتى لو كان مطفأً.
+                </span>
+                <button type="button" role="switch" aria-checked={status.callReject === true} disabled={busy}
+                  onClick={() => saveRules({ callReject: status.callReject !== true })}
+                  className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors ${status.callReject ? 'bg-gold' : 'bg-base-border'}`}>
+                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${status.callReject ? 'right-0.5' : 'right-[22px]'}`} />
+                </button>
+              </label>
+              {status.callReject && (
+                <label className="block space-y-1.5 rounded-lg border border-base-border p-3">
+                  <span className="text-xs text-text-secondary">نص الرسالة للمتصل (اتركه فارغًا للنص الافتراضي)</span>
+                  <textarea rows={2} maxLength={300} dir="auto"
+                    value={callMessageDraft ?? (status.callRejectMessage || '')}
+                    placeholder="مشغول الآن، سأتواصل معك لاحقًا."
+                    onChange={(event) => setCallMessageDraft(event.target.value)}
+                    className="w-full rounded-md border border-base-border bg-base-panel px-3 py-2 text-sm text-text-primary" />
+                  <button type="button" disabled={busy || callMessageDraft === null}
+                    onClick={async () => { if (await saveRules({ callRejectMessage: callMessageDraft })) setCallMessageDraft(null); }}
+                    className="min-h-9 w-full rounded-md border border-gold/40 px-3 text-xs text-gold disabled:opacity-50">حفظ الرسالة</button>
+                </label>
               )}
               <button type="button" disabled={busy} onClick={disconnect}
                 className="min-h-10 w-full rounded-lg border border-red-500/40 px-3 text-sm text-red-300 disabled:opacity-60">

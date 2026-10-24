@@ -1,6 +1,6 @@
 import { json } from '../../../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
-import { callNode, ClusterError, CLUSTER_MESSAGES, getClusterNode, getUserAssignment } from '../../../../../lib/whatsapp-cluster';
+import { callNode, ClusterError, CLUSTER_MESSAGES, getUserAssignment, nodeForAssignment } from '../../../../../lib/whatsapp-cluster';
 
 
 export async function GET(request) {
@@ -25,8 +25,10 @@ export async function GET(request) {
     replyScope: assignment.reply_scope || 'all',
     allowedNumbers: assignment.allowed_numbers || [],
     voiceReplyMode: assignment.voice_reply_mode || 'match',
+    callReject: assignment.call_reject_enabled === true,
+    callRejectMessage: assignment.call_reject_message || '',
   };
-  const node = getClusterNode(assignment.node_id);
+  const node = nodeForAssignment(assignment);
   if (!node) return json({ ...base, status: 'ERROR', connected: false, error: CLUSTER_MESSAGES.ASSIGNED_NODE_NOT_CONFIGURED }, 503);
 
   try {

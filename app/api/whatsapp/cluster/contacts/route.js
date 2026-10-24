@@ -1,6 +1,6 @@
 import { json } from '../../../../../lib/api-response';
 import { customerAccessResponse, requireCustomerRegistered } from '../../../../../lib/customer-access';
-import { getClusterNode, getUserAssignment } from '../../../../../lib/whatsapp-cluster';
+import { getUserAssignment, nodeForAssignment } from '../../../../../lib/whatsapp-cluster';
 import { nodeContactSearch } from '../../../../../lib/whatsapp-commands';
 
 
@@ -12,7 +12,7 @@ export async function GET(request) {
   const query = (searchParams.get('q') || '').trim().slice(0, 80);
   if (!query) return json({ matches: [] });
   const assignment = await getUserAssignment(access.user.id, access.client).catch(() => null);
-  const node = assignment?.status === 'connected' ? getClusterNode(assignment.node_id) : null;
+  const node = assignment?.status === 'connected' ? nodeForAssignment(assignment) : null;
   if (!node) return json({ error: true, code: 'NOT_LINKED', message: 'اربط واتساب الشخصي أولاً.' }, 409);
   return json({ matches: await nodeContactSearch(node)(query, { groups: searchParams.get('groups') === '1' }) });
 }

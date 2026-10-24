@@ -3,7 +3,7 @@ import { generateAssistantReply } from '../../../../../lib/assistant-response';
 import { synthesizeWithFallback } from '../../../../../lib/cloud-tts';
 import { splitForSpeech } from '../../../../../lib/text-chunks';
 import { transcribeAudio } from '../../../../../lib/transcription';
-import { createServiceClient, getClusterNode } from '../../../../../lib/whatsapp-cluster';
+import { createServiceClient, getClusterNode, slotFromBody } from '../../../../../lib/whatsapp-cluster';
 import { isReplyAllowed, wantsVoiceReply } from '../../../../../lib/whatsapp-reply-rules';
 
 
@@ -50,6 +50,7 @@ export async function POST(request) {
     .from('whatsapp_tenant_nodes')
     .select('*')
     .eq('node_id', node.id)
+    .eq('slot', slotFromBody(body))
     .maybeSingle();
   if (error) return json({ success: false, error: 'TENANT_LOOKUP_FAILED' }, 503);
   if (!isReplyAllowed(tenant, body.senderNumber || body.remoteJid)) {
