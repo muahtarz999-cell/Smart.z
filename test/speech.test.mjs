@@ -29,6 +29,12 @@ function setup({ cloud = 'ok', deviceFallback = true } = {}) {
   globalThis.__deviceSpoken = [];
   const requests = [];
   globalThis.fetch = async (url, init) => {
+    // Saving voice settings also syncs them to the connected WhatsApp cluster.
+    // This fixture exercises only /api/speech, so do not let that background
+    // settings request affect the synthesized-speech request sequence.
+    if (url === '/api/whatsapp/cluster/settings') {
+      return { ok: true, status: 200, json: async () => ({}) };
+    }
     const body = JSON.parse(init.body);
     requests.push(body);
     const fail = cloud === 'fail' || (cloud === 'fail-second' && requests.length === 2) || (cloud === 'fail-after-first' && requests.length > 1);
