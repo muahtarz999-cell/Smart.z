@@ -210,6 +210,7 @@ export default function Home() {
   const [customerDataUserId, setCustomerDataUserId] = useState(null);
   const skipProfileSaveRef = useRef(false);
   const profileEditPendingRef = useRef(false);
+  const preventInputFocusRef = useRef(false);
 
   const customerDataReady = Boolean(authUser?.id && customerDataUserId === authUser.id);
   const orbSize = expanded ? 190 : 128;
@@ -876,7 +877,15 @@ export default function Home() {
   // holding for more than 450 ms sends on release. No pointer capture: the
   // permission dialog steals the pointer and used to cancel the first press.
   function onTalkPress(event) {
-    event.preventDefault();
+    if (event?.preventDefault) event.preventDefault();
+    preventInputFocusRef.current = true;
+    if (typeof document !== 'undefined' && document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
+    setTimeout(() => {
+      preventInputFocusRef.current = false;
+    }, 450);
+
     const audioFlow = audioFlowRef.current;
     if (!audioFlow) return;
     setAudioPlaybackError('');
@@ -890,6 +899,9 @@ export default function Home() {
   }
 
   function onTalkRelease() {
+    setTimeout(() => {
+      preventInputFocusRef.current = false;
+    }, 450);
     const audioFlow = audioFlowRef.current;
     if (!audioFlow?.isRecording || !pressStartedAtRef.current) return;
     const heldFor = Date.now() - pressStartedAtRef.current;
@@ -1369,6 +1381,14 @@ export default function Home() {
                   type="text"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
+                  onPointerDown={() => {
+                    preventInputFocusRef.current = false;
+                  }}
+                  onFocus={(e) => {
+                    if (preventInputFocusRef.current) {
+                      e.target.blur();
+                    }
+                  }}
                   placeholder={attachment ? 'اسأل عن الملف المرفق' : 'اسأل المساعد أي شيء'}
                   enterKeyHint="send"
                   className="min-w-0 flex-1 bg-base-card border border-base-border text-text-primary rounded-lg h-10 px-3 text-sm text-right"
