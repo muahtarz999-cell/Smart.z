@@ -1,5 +1,5 @@
-import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import assert from 'node/assert/strict';
+import { readFile } from 'node/fs/promises';
 import test, { mock } from 'node:test';
 import { isReplyAllowed, wantsVoiceReply } from '../lib/whatsapp-reply-rules.js';
 import { planSendCommand } from '../lib/whatsapp-commands.js';
