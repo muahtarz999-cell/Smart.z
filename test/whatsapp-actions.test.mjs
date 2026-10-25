@@ -83,7 +83,9 @@ test('the assistant turn returns the tool call the model made', async () => {
 
 // ---------------------------------------------------------------- undo window
 const source = (await readFile(new URL('../lib/send-actions.js', import.meta.url), 'utf8'))
-  .replace("from './driving-commands'", `from '${new URL('../lib/driving-commands.js', import.meta.url).href}'`);
+  .replace("from './driving-commands'", `from '${new URL('../lib/driving-commands.js', import.meta.url).href}'`)
+  // send-actions.js also imports ./speech (browser audio code); the undo-window tests only need its settings.
+  .replace("import { getVoiceSettings } from './speech';", 'const getVoiceSettings = () => ({});');
 const actions = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 function setupActions(settings) {
