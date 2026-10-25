@@ -205,9 +205,19 @@ export default function ComputerPairingPhone() {
       );
       if (decodedRef.current) controls.stop();
       else scannerControlsRef.current = controls;
-    } catch {
+    } catch (cameraError) {
+      scannerControlsRef.current?.stop();
+      scannerControlsRef.current = null;
       setScannerActive(false);
-      setError('تعذر تشغيل الكاميرا. تحقق من الإذن أو أدخل بيانات QR يدويًا.');
+      const name = cameraError?.name || '';
+      const reason = name === 'NotAllowedError' || name === 'SecurityError'
+        ? 'الإذن مرفوض: افتح إعدادات الهاتف ← التطبيقات ← Smart.z ← الأذونات ← الكاميرا ← سماح.'
+        : name === 'NotFoundError'
+          ? 'لم يُعثر على كاميرا في هذا الجهاز.'
+          : name === 'NotReadableError'
+            ? 'الكاميرا مستخدمة من تطبيق آخر؛ أغلقه وأعد المحاولة.'
+            : 'تحقق من الإذن.';
+      setError(`تعذر تشغيل الكاميرا${name ? ` (${name})` : ''}. ${reason} أو الصق بيانات QR يدويًا.`);
     }
   }
 
